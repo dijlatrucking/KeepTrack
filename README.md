@@ -37,6 +37,7 @@ Plain HTML/CSS/JS (no build step) on Firebase: Authentication (email/password) a
 5. **Start using it**
    - Carriers → add your own company, then client carriers (set each one's dispatch fee %).
    - Invite a carrier admin for each carrier, and dispatchers from Team. Each invite code works once.
+   - Or let them sign up with **Request access**: they show up under Access requests (and on Overview), and one tap approves them. Approving a carrier creates the company too.
    - Carrier admins invite their own drivers.
 
 ## Data model

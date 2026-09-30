@@ -1,5 +1,5 @@
-import { db, collection, doc, addDoc, setDoc, updateDoc, query, where, serverTimestamp } from "../fb.js";
-import { h, card, table, stat, money, num, field, input, btn, formToObj, guard, inviteCode, pill, ago } from "../ui.js";
+import { db, collection, doc, addDoc, setDoc, updateDoc, deleteDoc, query, where, serverTimestamp, writeBatch } from "../fb.js";
+import { h, card, table, stat, money, num, field, input, select, btn, formToObj, guard, inviteCode, pill, ago } from "../ui.js";
 import { watch, byNewest } from "../data.js";
 import { loadsTable, loadForm, docsReviewQueue, requestsList, showInvite } from "../components.js";
 
@@ -9,6 +9,62 @@ async function createInvite(ctx, data) {
   const code = inviteCode();
   await setDoc(doc(db, "invites", code), { ...data, used: false, createdBy: ctx.uid, createdAt: serverTimestamp() });
   return code;
+}
+
+// People who signed up without a code. Approving a carrier creates their company in the same step.
+function accessRequests(ctx, { hideWhenEmpty } = {}) {
+  const body = h("div");
+  const box = card("Access requests", null, body);
+  box.classList.add("card-alert");
+  ctx.sub(watch(query(collection(db, "users"), where("role", "==", "pending")), (reqs) => {
+    reqs.sort(byNewest);
+    box.hidden = !!hideWhenEmpty && !reqs.length;
+    body.replaceChildren(reqs.length ? h("div", { class: "list" }, reqs.map((u) => {
+      const isCarrier = u.requestedRole !== "dispatcher";
+      const carrierSel = select("carrier", [
+        { value: "__new", label: `New carrier: ${u.company || u.name}` },
+        ...ctx.carriers.map((c) => ({ value: c.id, label: `Add to existing: ${c.name}` }))]);
+      const feeIn = input("fee", { type: "number", step: "0.1", min: "0", max: "100", placeholder: "e.g. 8" });
+      carrierSel.addEventListener("change", () => (feeIn.closest("label").hidden = carrierSel.value !== "__new"));
+
+      const approve = async () => {
+        const batch = writeBatch(db);
+        const userRef = doc(db, "users", u.id);
+        if (isCarrier) {
+          let carrierId = carrierSel.value;
+          if (carrierId === "__new") {
+            const cRef = doc(collection(db, "carriers"));
+            carrierId = cRef.id;
+            batch.set(cRef, { name: u.company || u.name, mc: u.mc || "", dot: u.dot || "", phone: u.phone || "", feePercent: num(feeIn.value), createdAt: serverTimestamp() });
+          }
+          batch.update(userRef, { role: "carrierAdmin", carrierId, approvedAt: serverTimestamp() });
+        } else {
+          batch.update(userRef, { role: "dispatcher", carrierId: null, assignedCarriers: [], allCarriers: false, approvedAt: serverTimestamp() });
+        }
+        await batch.commit();
+        if (isCarrier && carrierSel.value === "__new") ctx.reload();
+      };
+
+      return h("div", { class: "row col" },
+        h("div", { class: "row-top" },
+          h("div", null,
+            h("div", { class: "strong" }, isCarrier ? (u.company || "Carrier") + " · " + u.name : u.name),
+            h("div", { class: "muted small" }, (isCarrier ? "Carrier" : "Dispatcher") + " · requested " + ago(u.createdAt))),
+          pill("pending", "Pending")),
+        h("div", { class: "request-grid" },
+          h("div", null, h("span", { class: "muted" }, "Email: "), u.email),
+          u.phone ? h("div", null, h("span", { class: "muted" }, "Phone: "), h("a", { href: "tel:" + u.phone }, u.phone)) : null,
+          u.mc ? h("div", null, h("span", { class: "muted" }, "MC: "), u.mc) : null,
+          u.dot ? h("div", null, h("span", { class: "muted" }, "DOT: "), u.dot) : null),
+        u.note ? h("div", { class: "quote" }, u.note) : null,
+        isCarrier ? h("div", { class: "form-grid" }, field("Company", carrierSel), field("Dispatch fee %", feeIn)) : null,
+        h("div", { class: "row-inline" },
+          btn(isCarrier ? "Approve carrier" : "Approve dispatcher", () => guard(approve, "Approved"), "ok"),
+          btn("Deny", () => confirm(`Deny ${u.name}? They won't get access.`) && guard(() => deleteDoc(doc(db, "users", u.id)), "Request denied"), "ghost")),
+        !isCarrier ? h("p", { class: "muted small" }, "After approving, give them carriers under Team.") : null);
+    })) : h("p", { class: "empty" }, "No one waiting."));
+  }));
+  return box;
 }
 
 function overview(ctx, root) {
@@ -22,7 +78,7 @@ function overview(ctx, root) {
   ctx.sub(watch(collection(db, "loads"), (r) => { loads = r; draw(); }));
   ctx.sub(watch(collection(db, "loadMoney"), (r) => { moneyRows = r; draw(); }));
   draw();
-  root.append(stats,
+  root.append(accessRequests(ctx, { hideWhenEmpty: true }), stats,
     h("div", { class: "grid-2" },
       docsReviewQueue(ctx, allIds(ctx), (n) => { pending = n; draw(); }),
       requestsList(ctx, allIds(ctx), { staff: true })),
@@ -122,6 +178,7 @@ function docsView(ctx, root) {
 
 export default [
   { id: "overview", label: "Overview", render: overview },
+  { id: "access", label: "Access requests", render: (ctx, root) => root.append(accessRequests(ctx)) },
   { id: "loads", label: "Loads", render: loadsView },
   { id: "carriers", label: "Carriers", render: carriersView },
   { id: "team", label: "Team", render: teamView },

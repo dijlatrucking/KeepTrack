@@ -1,6 +1,6 @@
 import {
   isConfigured, auth, db, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword,
-  signOut, sendPasswordResetEmail, doc, getDoc, onSnapshot, writeBatch, serverTimestamp
+  signOut, sendPasswordResetEmail, doc, getDoc, setDoc, onSnapshot, writeBatch, serverTimestamp
 } from "./fb.js";
 import { h, field, input, btn, toast, friendlyError } from "./ui.js";
 import { loadCarriers } from "./data.js";
@@ -84,17 +84,73 @@ function renderAuth(mode = "signin") {
     field("Phone", input("phone", { type: "tel", autocomplete: "tel" })),
     field("Email", input("email", { type: "email", autocomplete: "email", required: true })),
     field("Password", input("password", { type: "password", autocomplete: "new-password", minlength: "6", required: true })),
-    btn("Create account", null, "primary", { type: "submit" }));
+    btn("Create account", null, "primary", { type: "submit" }),
+    h("p", { class: "muted small" }, "No code? ", btn("Request access instead", () => renderAuth("request"), "link")));
+
+  // No invite code: sign up as "pending" and wait for the owner to approve.
+  const roleSel = h("select", { name: "requestedRole", class: "input" },
+    h("option", { value: "carrierAdmin" }, "A carrier (I own or run trucks)"),
+    h("option", { value: "dispatcher" }, "A dispatcher (joining the team)"));
+  const companyBox = h("div", { class: "stack" },
+    field("Company name", input("company", { autocomplete: "organization" })),
+    h("div", { class: "form-grid" }, field("MC #", input("mc", { inputmode: "numeric" })), field("DOT #", input("dot", { inputmode: "numeric" }))));
+  roleSel.addEventListener("change", () => {
+    const carrier = roleSel.value === "carrierAdmin";
+    companyBox.hidden = !carrier;
+    companyBox.querySelector("[name=company]").required = carrier;
+  });
+  companyBox.querySelector("[name=company]").required = true;
+
+  const request = h("form", { class: "stack", onSubmit: async (e) => {
+    e.preventDefault();
+    busy(request, true); err.textContent = "";
+    const carrier = roleSel.value === "carrierAdmin";
+    let cred = null;
+    signingUp = true;
+    try {
+      cred = await createUserWithEmailAndPassword(auth, request.email.value.trim(), request.password.value);
+      await setDoc(doc(db, "users", cred.user.uid), {
+        name: request.name.value.trim(), email: request.email.value.trim(), phone: request.phone.value.trim(),
+        role: "pending", requestedRole: roleSel.value,
+        company: carrier ? request.company.value.trim() : "", mc: carrier ? request.mc.value.trim() : "", dot: carrier ? request.dot.value.trim() : "",
+        note: request.note.value.trim(), createdAt: serverTimestamp(),
+      });
+      signingUp = false;
+    } catch (x) {
+      pendingAuthError = friendlyError(x);
+      if (cred) { try { await cred.user.delete(); } catch (_) {} }
+      signingUp = false;
+      renderAuth("request");
+    }
+  } },
+    field("I'm signing up as", roleSel),
+    companyBox,
+    field("Full name", input("name", { required: true, autocomplete: "name" })),
+    field("Phone", input("phone", { type: "tel", autocomplete: "tel", required: true })),
+    field("Email", input("email", { type: "email", autocomplete: "email", required: true })),
+    field("Password", input("password", { type: "password", autocomplete: "new-password", minlength: "6", required: true })),
+    field("Anything we should know? (optional)", h("textarea", { name: "note", class: "input", rows: "2", placeholder: "Number of trucks, lanes you run, how you heard about us…" })),
+    btn("Request access", null, "primary", { type: "submit" }),
+    h("p", { class: "muted small" }, "Drivers: ask your carrier for an invite code instead."));
 
   const tab = (id, label) => h("button", { type: "button", role: "tab", class: "tab" + (mode === id ? " on" : ""), "aria-selected": String(mode === id), onClick: () => renderAuth(id) }, label);
   root.replaceChildren(h("main", { class: "auth" },
     h("div", { class: "auth-card" },
       brand(),
       h("p", { class: "muted" }, "Loads, paperwork and pay, all in one place."),
-      h("div", { class: "tabs", role: "tablist" }, tab("signin", "Sign in"), tab("signup", "Create account")),
-      mode === "signin" ? signin : signup,
+      h("div", { class: "tabs tabs-3", role: "tablist" }, tab("signin", "Sign in"), tab("signup", "Invite code"), tab("request", "Request access")),
+      mode === "signin" ? signin : mode === "signup" ? signup : request,
       err),
     h("p", { class: "muted small center" }, "A Spartan Groups LLC service")));
+}
+
+function renderPending(user, profile) {
+  clearView();
+  root.replaceChildren(h("main", { class: "auth" }, h("div", { class: "auth-card" }, brand(),
+    h("h1", null, "Request received"),
+    h("p", null, `Thanks${profile.name ? ", " + profile.name.split(" ")[0] : ""}. Your ${profile.requestedRole === "dispatcher" ? "dispatcher" : "carrier"} account is waiting for approval.`),
+    h("p", { class: "muted" }, "Keep this page open or sign back in later. It opens up automatically the moment you're approved."),
+    btn("Sign out", () => signOut(auth)))));
 }
 
 function renderSetupNeeded() {
@@ -115,6 +171,7 @@ function renderNoProfile(user) {
 
 async function renderShell(user, profile) {
   clearView();
+  if (profile.role === "pending") return renderPending(user, profile);
   const role = ROLES[profile.role];
   if (!role) return renderNoProfile(user);
 

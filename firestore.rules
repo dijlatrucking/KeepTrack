@@ -41,9 +41,14 @@ service cloud.firestore {
     match /users/{uid} {
       allow read: if signedIn() && (request.auth.uid == uid || isOwner()
         || manages(resource.data.get('carrierId', '')));
-      allow create: if signedIn() && request.auth.uid == uid
-        && request.resource.data.keys().hasOnly(['name', 'email', 'phone', 'role', 'carrierId', 'invite', 'createdAt'])
-        && redeemsInvite(request.resource.data);
+      allow create: if signedIn() && request.auth.uid == uid && (
+           // Invite code: role and carrier come from the invite.
+           (request.resource.data.keys().hasOnly(['name', 'email', 'phone', 'role', 'carrierId', 'invite', 'createdAt'])
+            && redeemsInvite(request.resource.data))
+           // No code: request access and wait as "pending" until the owner approves.
+        || (request.resource.data.role == 'pending'
+            && request.resource.data.requestedRole in ['carrierAdmin', 'dispatcher']
+            && request.resource.data.keys().hasOnly(['name', 'email', 'phone', 'role', 'requestedRole', 'company', 'mc', 'dot', 'note', 'createdAt'])));
       allow update: if isOwner()
         || (request.auth.uid == uid && onlyChanges(['name', 'phone']))
         || (resource.data.role == 'driver' && isCarrierAdmin(resource.data.get('carrierId', ''))
