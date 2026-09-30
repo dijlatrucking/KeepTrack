@@ -1,12 +1,12 @@
-// Paste your Firebase web app config here (Firebase console → Project settings → Your apps → Web app → Config).
+// Firebase web app config for the KeepTrack project.
 // These values are safe to publish: access is controlled by firestore.rules and storage.rules, not by this key.
 export const firebaseConfig = {
-  apiKey: "PASTE_API_KEY",
-  authDomain: "PASTE_PROJECT_ID.firebaseapp.com",
-  projectId: "PASTE_PROJECT_ID",
-  storageBucket: "PASTE_PROJECT_ID.appspot.com",
-  messagingSenderId: "PASTE_SENDER_ID",
-  appId: "PASTE_APP_ID"
+  apiKey: "AIzaSyAD09pk9OyApPn6f8OCiCFr-PpYT17sEHU",
+  authDomain: "keeptrack-6426e.firebaseapp.com",
+  projectId: "keeptrack-6426e",
+  storageBucket: "keeptrack-6426e.firebasestorage.app",
+  messagingSenderId: "1062091068119",
+  appId: "1:1062091068119:web:9be37e250c94d189561692"
 };
 
 export const isConfigured = !firebaseConfig.apiKey.startsWith("PASTE");
