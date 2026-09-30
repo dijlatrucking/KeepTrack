@@ -1,0 +1,135 @@
+rules_version = '2';
+
+// KeepTrack access model
+//   owner         – sees and edits everything
+//   dispatcher    – works only the carriers the owner assigns (or all, if allCarriers is on)
+//   carrierAdmin  – sees only their own company: loads, money, drivers, trucks, approved docs
+//   driver        – sees only their own loads, uploads and paystubs (never rates or fees)
+// Load money lives in /loadMoney so drivers can read their loads without seeing rates.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function userPath(uid) { return /databases/$(database)/documents/users/$(uid); }
+    function invitePath(code) { return /databases/$(database)/documents/invites/$(code); }
+    function hasProfile() { return signedIn() && exists(userPath(request.auth.uid)); }
+    function me() { return get(userPath(request.auth.uid)).data; }
+    function isRole(r) { return hasProfile() && me().role == r; }
+    function isOwner() { return isRole('owner'); }
+    function dispatches(cid) {
+      return isRole('dispatcher')
+        && (me().get('allCarriers', false) == true || cid in me().get('assignedCarriers', []));
+    }
+    function isCarrierAdmin(cid) { return isRole('carrierAdmin') && me().get('carrierId', '') == cid; }
+    function isDriverIn(cid) { return isRole('driver') && me().get('carrierId', '') == cid; }
+    function staff(cid) { return isOwner() || dispatches(cid); }
+    function manages(cid) { return staff(cid) || isCarrierAdmin(cid); }
+    function onlyChanges(keys) { return request.resource.data.diff(resource.data).affectedKeys().hasOnly(keys); }
+    function keepsCarrier() { return request.resource.data.carrierId == resource.data.carrierId; }
+
+    // Sign-up must redeem an unused invite in the same batch, and copy its role + carrier exactly.
+    function redeemsInvite(d) {
+      let before = get(invitePath(d.invite)).data;
+      let after = getAfter(invitePath(d.invite)).data;
+      return before.used == false
+        && after.used == true && after.usedBy == request.auth.uid
+        && d.role == before.role
+        && d.get('carrierId', null) == before.get('carrierId', null);
+    }
+
+    match /users/{uid} {
+      allow read: if signedIn() && (request.auth.uid == uid || isOwner()
+        || manages(resource.data.get('carrierId', '')));
+      allow create: if signedIn() && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['name', 'email', 'phone', 'role', 'carrierId', 'invite', 'createdAt'])
+        && redeemsInvite(request.resource.data);
+      allow update: if isOwner()
+        || (request.auth.uid == uid && onlyChanges(['name', 'phone']))
+        || (resource.data.role == 'driver' && isCarrierAdmin(resource.data.get('carrierId', ''))
+            && onlyChanges(['name', 'phone', 'payType', 'payRate', 'truckId', 'truckUnit', 'active']));
+      allow delete: if isOwner()
+        || (resource.data.role == 'driver' && isCarrierAdmin(resource.data.get('carrierId', '')));
+    }
+
+    match /invites/{code} {
+      // Anyone signed in may look up one code they already hold; only issuers may list them.
+      allow get: if signedIn();
+      allow list: if isOwner() || isCarrierAdmin(resource.data.get('carrierId', ''));
+      allow create: if request.resource.data.used == false
+        && request.resource.data.createdBy == request.auth.uid
+        && (isOwner()
+            || (request.resource.data.role == 'driver' && isCarrierAdmin(request.resource.data.carrierId)));
+      allow update: if signedIn() && resource.data.used == false
+        && request.resource.data.used == true
+        && request.resource.data.usedBy == request.auth.uid
+        && onlyChanges(['used', 'usedBy', 'usedAt'])
+        && getAfter(userPath(request.auth.uid)).data.invite == code;
+      allow delete: if isOwner() || isCarrierAdmin(resource.data.get('carrierId', ''));
+    }
+
+    match /carriers/{cid} {
+      allow read: if manages(cid) || isDriverIn(cid);
+      allow write: if isOwner();
+    }
+
+    match /trucks/{id} {
+      allow read: if manages(resource.data.carrierId) || isDriverIn(resource.data.carrierId);
+      allow create: if isOwner() || isCarrierAdmin(request.resource.data.carrierId);
+      allow update: if (isOwner() || isCarrierAdmin(resource.data.carrierId)) && keepsCarrier();
+      allow delete: if isOwner() || isCarrierAdmin(resource.data.carrierId);
+    }
+
+    match /loads/{id} {
+      allow read: if manages(resource.data.carrierId)
+        || (isDriverIn(resource.data.carrierId) && resource.data.driverId == request.auth.uid);
+      allow create: if staff(request.resource.data.carrierId);
+      allow update: if (staff(resource.data.carrierId) && keepsCarrier())
+        || (isDriverIn(resource.data.carrierId) && resource.data.driverId == request.auth.uid
+            && onlyChanges(['status', 'updatedAt'])
+            && request.resource.data.status in ['in_transit', 'delivered']);
+      allow delete: if isOwner();
+    }
+
+    match /loadMoney/{id} {
+      allow read: if manages(resource.data.carrierId);
+      allow create: if staff(request.resource.data.carrierId);
+      allow update: if staff(resource.data.carrierId) && keepsCarrier();
+      allow delete: if isOwner();
+    }
+
+    // Paperwork flows up: driver uploads (pending) → dispatch approves → carrier + owner see it.
+    match /documents/{id} {
+      allow read: if staff(resource.data.carrierId)
+        || (isCarrierAdmin(resource.data.carrierId) && resource.data.status in ['approved', 'filed'])
+        || (hasProfile() && resource.data.uploadedBy == request.auth.uid
+            && me().get('carrierId', '') == resource.data.carrierId);
+      allow create: if request.resource.data.uploadedBy == request.auth.uid && (
+           (isDriverIn(request.resource.data.carrierId) && request.resource.data.status == 'pending')
+        || (isCarrierAdmin(request.resource.data.carrierId) && request.resource.data.status == 'filed')
+        || staff(request.resource.data.carrierId));
+      allow update: if (staff(resource.data.carrierId) && keepsCarrier())
+        || (isCarrierAdmin(resource.data.carrierId) && resource.data.status == 'filed'
+            && onlyChanges(['name', 'category', 'tags', 'expiresAt']));
+      allow delete: if isOwner()
+        || (isCarrierAdmin(resource.data.carrierId) && resource.data.status == 'filed');
+    }
+
+    match /requests/{id} {
+      allow read: if manages(resource.data.carrierId);
+      allow create: if request.resource.data.createdBy == request.auth.uid
+        && (isOwner() || isCarrierAdmin(request.resource.data.carrierId));
+      allow update: if staff(resource.data.carrierId)
+        && onlyChanges(['status', 'reply', 'repliedBy', 'repliedAt']);
+      allow delete: if isOwner();
+    }
+
+    match /paystubs/{id} {
+      allow read: if isOwner() || isCarrierAdmin(resource.data.carrierId)
+        || (isDriverIn(resource.data.carrierId) && resource.data.driverId == request.auth.uid);
+      allow create: if isOwner() || isCarrierAdmin(request.resource.data.carrierId);
+      allow update: if (isOwner() || isCarrierAdmin(resource.data.carrierId)) && keepsCarrier();
+      allow delete: if isOwner() || isCarrierAdmin(resource.data.carrierId);
+    }
+  }
+}

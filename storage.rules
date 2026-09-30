@@ -1,0 +1,25 @@
+rules_version = '2';
+
+// Files live at docs/{carrierId}/{uploaderUid}/{file}.
+// Uploaders can always read their own files; owner, assigned dispatchers and the carrier admin can read the carrier's files.
+service firebase.storage {
+  match /b/{bucket}/o {
+    function profile() {
+      return firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data;
+    }
+    function canSee(cid) {
+      let p = profile();
+      return p.role == 'owner'
+        || (p.role == 'dispatcher' && (p.get('allCarriers', false) == true || cid in p.get('assignedCarriers', [])))
+        || (p.role == 'carrierAdmin' && p.get('carrierId', '') == cid);
+    }
+
+    match /docs/{cid}/{uid}/{file} {
+      allow read: if request.auth != null && (request.auth.uid == uid || canSee(cid));
+      allow create: if request.auth != null && request.auth.uid == uid
+        && (profile().get('carrierId', '') == cid || canSee(cid))
+        && request.resource.size < 15 * 1024 * 1024
+        && (request.resource.contentType.matches('image/.*') || request.resource.contentType == 'application/pdf');
+    }
+  }
+}
