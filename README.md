@@ -15,7 +15,7 @@ Paperwork flows up: driver uploads → dispatch approves → carrier admin and o
 
 ## Stack
 
-Plain HTML/CSS/JS (no build step) on Firebase: Authentication (email/password), Cloud Firestore, Cloud Storage. Security lives in `firestore.rules` and `storage.rules`.
+Plain HTML/CSS/JS (no build step) on Firebase: Authentication (email/password) and Cloud Firestore, all on the free Spark plan. Scans are shrunk in the browser and stored in Firestore (`docFiles`), so Cloud Storage is not required. Security lives in `firestore.rules` (`storage.rules` is only needed if Storage is turned on later).
 
 ## One-time setup (can all be done from a phone browser)
 
@@ -23,10 +23,10 @@ Plain HTML/CSS/JS (no build step) on Firebase: Authentication (email/password), 
    - Add app → Web → nickname `KeepTrack` → Register. Copy the `firebaseConfig` values into `js/firebase-config.js`.
    - Authentication → Get started → Email/Password → Enable.
    - Firestore Database → Create database → production mode.
-   - Storage → Get started (needs the Blaze pay-as-you-go plan; set a small budget alert).
+   - (Optional, later) Storage → Get started. Not needed: scans are saved in Firestore.
 2. **Paste the security rules**
    - Firestore Database → Rules → replace everything with `firestore.rules` → Publish.
-   - Storage → Rules → replace everything with `storage.rules` → Publish (accept the prompt to let Storage read Firestore).
+   - (Only if Storage is on) Storage → Rules → paste `storage.rules` → Publish.
 3. **Put the site online with GitHub Pages**
    - GitHub repo → Settings → Pages → Source: Deploy from a branch → `main` / root → Save.
    - Firebase → Authentication → Settings → Authorized domains → add `dijlatrucking.github.io`.

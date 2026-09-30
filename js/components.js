@@ -1,7 +1,7 @@
 // Pieces shared by several roles.
 import {
-  db, storage, collection, doc, addDoc, setDoc, updateDoc, getDocs, query, where,
-  serverTimestamp, ref, uploadBytes, getDownloadURL
+  db, storage, collection, doc, addDoc, setDoc, updateDoc, getDoc, getDocs, query, where,
+  serverTimestamp, writeBatch, ref, getDownloadURL
 } from "./fb.js";
 import { h, card, table, pill, money, num, fmtDate, ago, field, input, select, btn, formToObj, guard, toast } from "./ui.js";
 import { watch, watchMany, perCarrier, byNewest } from "./data.js";
@@ -18,32 +18,99 @@ export const shortId = (id) => "#" + id.slice(0, 6).toUpperCase();
 
 // ---------- Documents ----------
 
+// Scans are shrunk in the browser and saved in Firestore (docFiles/{docId}), so no Storage/Blaze plan is needed.
+// Firestore caps a document at 1 MiB, so each scan is squeezed under ~900 KB.
+const MAX_CHARS = 900000;
+
+function readAsDataURL(file) {
+  return new Promise((res, rej) => {
+    const r = new FileReader();
+    r.onload = () => res(r.result);
+    r.onerror = () => rej(new Error("Couldn't read that file."));
+    r.readAsDataURL(file);
+  });
+}
+
+async function decodeImage(file) {
+  try {
+    return await createImageBitmap(file, { imageOrientation: "from-image" });
+  } catch (_) {
+    const url = URL.createObjectURL(file);
+    try {
+      const img = new Image();
+      img.src = url;
+      await img.decode();
+      return img;
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  }
+}
+
+export async function toScan(file) {
+  if (file.type === "application/pdf") {
+    const url = await readAsDataURL(file);
+    if (url.length > MAX_CHARS) throw new Error("That PDF is too big (max about 650 KB). Take a photo of the page instead.");
+    return url;
+  }
+  if (!file.type.startsWith("image/")) throw new Error("Use a photo or a PDF.");
+  const img = await decodeImage(file);
+  const w0 = img.width, h0 = img.height;
+  let max = 1800, q = 0.72;
+  for (let i = 0; i < 7; i++) {
+    const scale = Math.min(1, max / Math.max(w0, h0));
+    const c = document.createElement("canvas");
+    c.width = Math.round(w0 * scale);
+    c.height = Math.round(h0 * scale);
+    const g = c.getContext("2d");
+    g.fillStyle = "#fff";
+    g.fillRect(0, 0, c.width, c.height);
+    g.drawImage(img, 0, 0, c.width, c.height);
+    const url = c.toDataURL("image/jpeg", q);
+    if (url.length <= MAX_CHARS) return url;
+    max = Math.round(max * 0.8);
+    q = Math.max(0.45, q - 0.07);
+  }
+  throw new Error("Couldn't shrink that photo enough. Try again a little closer to the page.");
+}
+
 export async function openDoc(d) {
   const w = window.open("", "_blank");
   try {
-    const url = await getDownloadURL(ref(storage, d.storagePath));
+    let url;
+    if (d.storagePath) {
+      url = await getDownloadURL(ref(storage, d.storagePath));
+    } else {
+      const snap = await getDoc(doc(db, "docFiles", d.id));
+      if (!snap.exists()) throw new Error("missing");
+      const blob = await (await fetch(snap.data().data)).blob();
+      url = URL.createObjectURL(blob);
+    }
     if (w) w.location = url; else window.location = url;
   } catch (e) {
+    console.error(e);
     if (w) w.close();
     toast("Couldn't open that file.", "bad");
   }
 }
 
 export async function uploadDoc(ctx, file, meta) {
-  if (!file) throw new Error("Choose a file first.");
-  if (file.size > 15 * 1024 * 1024) throw new Error("Files must be under 15 MB.");
-  const safe = file.name.replace(/[^\w.-]+/g, "_");
-  const path = `docs/${meta.carrierId}/${ctx.uid}/${Date.now()}_${safe}`;
-  await uploadBytes(ref(storage, path), file, { contentType: file.type || "application/octet-stream" });
-  return addDoc(collection(db, "documents"), {
+  if (!file) throw new Error("Choose a file or take a photo first.");
+  const data = await toScan(file);
+  const docRef = doc(collection(db, "documents"));
+  const batch = writeBatch(db);
+  batch.set(docRef, {
     ...meta,
     name: meta.name || file.name,
-    storagePath: path,
+    fileType: data.startsWith("data:application/pdf") ? "pdf" : "image",
     uploadedBy: ctx.uid,
     uploaderName: ctx.profile.name || "",
     uploaderRole: ctx.profile.role,
     createdAt: serverTimestamp(),
   });
+  batch.set(doc(db, "docFiles", docRef.id), { carrierId: meta.carrierId, uploadedBy: ctx.uid, data });
+  await batch.commit();
+  return docRef;
 }
 
 // Pending BOLs/receipts for staff to approve. Approved docs become visible to the carrier admin.

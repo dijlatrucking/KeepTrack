@@ -115,6 +115,21 @@ service cloud.firestore {
         || (isCarrierAdmin(resource.data.carrierId) && resource.data.status == 'filed');
     }
 
+    // The scan itself (a shrunk image or small PDF), stored beside its /documents record with the same id.
+    // Readable by exactly the people who can read that document.
+    match /docFiles/{id} {
+      function docMeta() { return get(/databases/$(database)/documents/documents/$(id)).data; }
+      allow get: if hasProfile() && (
+           staff(docMeta().carrierId)
+        || (isCarrierAdmin(docMeta().carrierId) && docMeta().status in ['approved', 'filed'])
+        || (docMeta().uploadedBy == request.auth.uid && me().get('carrierId', '') == docMeta().carrierId));
+      allow create: if hasProfile()
+        && request.resource.data.uploadedBy == request.auth.uid
+        && getAfter(/databases/$(database)/documents/documents/$(id)).data.uploadedBy == request.auth.uid
+        && getAfter(/databases/$(database)/documents/documents/$(id)).data.carrierId == request.resource.data.carrierId;
+      allow delete: if isOwner();
+    }
+
     match /requests/{id} {
       allow read: if manages(resource.data.carrierId);
       allow create: if request.resource.data.createdBy == request.auth.uid
