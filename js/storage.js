@@ -16,6 +16,7 @@ const RECORD_BYTES = 2048; // one load, expense, account… with its indexes, ro
 const SCAN_GUESS = 400 * 1024; // for older scans saved before sizes were recorded
 const OTHER = ["loads", "loadMoney", "expenses", "recurring", "users", "carriers", "trucks", "requests", "paystubs", "invites", "settings"];
 const BATCH = 8; // scans per trip to the Drive script
+const DRIVE_LAYOUT = 2; // bump when the Drive script files things differently, so the next backup re-files them
 
 export const fmtMB = (b) => {
   const m = b / MB;
@@ -69,7 +70,10 @@ const stamp = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, 
 // in KeepTrack / Backups. Each copy is recorded on its document so "Free up space" knows it's safe.
 export async function backupToDrive(onProgress = () => {}) {
   if (!(await driveUrl())) throw new Error("Connect Google Drive first (below).");
-  const todo = (await allDocs()).filter((d) => !d.fileFreed && !d.fileCleared && !d.backedUpAt && d.status !== "rejected");
+  // New scans, plus anything filed under an older Drive layout (those get moved into place, not copied again).
+  const todo = (await allDocs()).filter((d) => !d.fileCleared && d.status !== "rejected" &&
+    (d.fileFreed ? d.driveFileId && d.driveLayout !== DRIVE_LAYOUT : !d.backedUpAt || d.driveLayout !== DRIVE_LAYOUT));
+  const freedIds = new Set(todo.filter((d) => d.fileFreed).map((d) => d.id));
   if (!todo.length) return { done: 0, failed: 0, nothing: true };
   const name = "KeepTrack backup " + stamp(new Date());
   let done = 0, failed = 0, sheetUrl = null, lastError = "";
@@ -83,7 +87,10 @@ export async function backupToDrive(onProgress = () => {}) {
     const b = writeBatch(db);
     for (const r of j.results || []) {
       if (r.ok && r.fileId) {
-        b.update(doc(db, "documents", r.docId), { driveFileId: r.fileId, driveUrl: r.url || null, backedUpAt: serverTimestamp(), ...(r.size ? { size: r.size } : {}) });
+        b.update(doc(db, "documents", r.docId), {
+          driveFileId: r.fileId, driveUrl: r.url || null, driveLayout: DRIVE_LAYOUT,
+          ...(freedIds.has(r.docId) ? {} : { backedUpAt: serverTimestamp() }), ...(r.size ? { size: r.size } : {}),
+        });
         done++;
       } else { failed++; lastError = r.error || lastError; }
     }
