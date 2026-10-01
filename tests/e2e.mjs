@@ -418,6 +418,10 @@ await run("Carrier rejects the duplicate, approves the real lumper, and it becom
   await toast(carrier, "Duplicate rejected");
   const t0 = Date.now();
   while ((await lumpers.count()) >= before && Date.now() - t0 < 10000) await carrier.waitForTimeout(200);
+  // with the copy gone, the real one shouldn't still be flagged
+  const stillFlagged = () => lumpers.filter({ hasText: "Boise" }).filter({ hasText: "Possible duplicate" }).count();
+  while ((await stillFlagged()) && Date.now() - t0 < 12000) await carrier.waitForTimeout(200);
+  if (await stillFlagged()) throw new Error("The real lumper is still flagged after its duplicate was rejected");
   await lumpers.filter({ hasText: "Boise" }).first().getByRole("button", { name: "Approve + add expense" }).click();
   await toast(carrier, "Approved and added to expenses");
   await nav(carrier, "Expenses");
@@ -425,6 +429,8 @@ await run("Carrier rejects the duplicate, approves the real lumper, and it becom
   await carrier.locator(".items").first().locator(".item", { hasText: "Lumper" }).filter({ hasText: "Load #" }).first().waitFor();
   await nav(carrier, "Loads");
   await carrier.locator(".item", { hasText: "Boise, ID → Denver, CO" }).first().getByText("Load expenses $85.00").waitFor();
+  await nav(carrier, "Documents"); // the next steps watch the carrier's document vault
+  await carrier.getByRole("heading", { name: "Document vault" }).waitFor();
 });
 
 await run("Dispatcher sees the BOL in the review queue, opens the scan, and approves it", async () => {

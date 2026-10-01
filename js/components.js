@@ -255,30 +255,49 @@ const dupeCache = new Map();
 export function findDuplicate(d) {
   if (dupeCache.has(d.id)) return dupeCache.get(d.id);
   const run = (async () => {
-    const base = [where("carrierId", "==", d.carrierId)];
-    const tries = [];
-    if (d.hash) tries.push(["exact", [...base, where("hash", "==", d.hash)]]);
-    if (d.loadId && ["BOL", "POD", "Rate con", "Lumper"].includes(d.kind)) tries.push(["load", [...base, where("loadId", "==", d.loadId), where("kind", "==", d.kind)]]);
-    if (d.amount) tries.push(["amount", [...base, where("amount", "==", d.amount)]]);
-    for (const [why, w] of tries) {
-      try {
-        const snap = await getDocs(query(collection(db, "documents"), ...w));
-        const day = (x) => (x.createdAt && x.createdAt.seconds ? Math.floor(x.createdAt.seconds / 86400) : 0);
-        const other = snap.docs.map((x) => ({ id: x.id, ...x.data() }))
-          .filter((x) => x.id !== d.id && x.status !== "rejected")
-          .filter((x) => why !== "amount" || (d.loadId ? x.loadId === d.loadId : Math.abs(day(x) - day(d)) <= 2))
-          .sort(byNewest).pop();
-        if (other) return { why, other };
-      } catch (e) { console.warn("[dupe] check skipped:", why, e && (e.code || e.message)); /* missing index or no access: just don't flag */ }
+    for (let attempt = 0; ; attempt++) {
+      const r = await checkDuplicate(d);
+      if (r && r !== "error") dupeHits.set(d.id, r.other.id);
+      if (r !== "error" || attempt >= 2) return r === "error" ? null : r;
+      await new Promise((ok) => setTimeout(ok, 1200 * (attempt + 1))); // a query failed: try again shortly
     }
-    cleanChecks.add(d.id);
-    return null;
   })();
   dupeCache.set(d.id, run);
   return run;
 }
+async function checkDuplicate(d) {
+  let failed = false;
+  const base = [where("carrierId", "==", d.carrierId)];
+  const tries = [];
+  if (d.hash) tries.push(["exact", [...base, where("hash", "==", d.hash)]]);
+  if (d.loadId && ["BOL", "POD", "Rate con", "Lumper"].includes(d.kind)) tries.push(["load", [...base, where("loadId", "==", d.loadId), where("kind", "==", d.kind)]]);
+  if (d.amount) tries.push(["amount", [...base, where("amount", "==", d.amount)]]);
+  const day = (x) => Math.floor((x.createdAt && x.createdAt.seconds ? x.createdAt.seconds : Date.now() / 1000) / 86400);
+  // Same amount counts when both are on the same load, or (if either has no load) sent within 2 days.
+  const sameSpend = (x) => (d.loadId && x.loadId ? x.loadId === d.loadId : Math.abs(day(x) - day(d)) <= 2);
+  for (const [why, w] of tries) {
+    try {
+      const snap = await getDocs(query(collection(db, "documents"), ...w));
+      const other = snap.docs.map((x) => ({ id: x.id, ...x.data() }))
+        .filter((x) => x.id !== d.id && x.status !== "rejected")
+        .filter((x) => why !== "amount" || sameSpend(x))
+        .sort(byNewest).pop();
+      if (other) return { why, other };
+    } catch (e) { failed = true; console.warn("[dupe] check failed:", why, e && (e.code || e.message)); }
+  }
+  if (failed) return "error";
+  cleanChecks.add(d.id); // nothing found: look again next time the queue changes
+  return null;
+}
 const cleanChecks = new Set();
-function forgetCleanChecks() { cleanChecks.forEach((id) => dupeCache.delete(id)); cleanChecks.clear(); }
+const dupeHits = new Map(); // doc id → the id of the paper it looks like
+// Re-check papers that came up clean (something new may duplicate them) and papers whose match
+// just left the queue (it may have been rejected, so the flag may no longer apply).
+function forgetChecks(gone) {
+  cleanChecks.forEach((id) => dupeCache.delete(id));
+  cleanChecks.clear();
+  dupeHits.forEach((otherId, id) => { if (gone.has(otherId)) { dupeCache.delete(id); dupeHits.delete(id); } });
+}
 const dupeText = (r) => r.why === "exact" ? `Exact copy of “${r.other.name}”` : r.why === "load" ? `This load already has a ${r.other.kind}` : `Same amount already sent`;
 
 // Turn a driver's receipt into an expense (owner / carrier only), so nobody types it twice.
@@ -312,7 +331,7 @@ export function docsReviewQueue(ctx, carrierIds, onCount) {
   const body = h("div");
   const canExpense = ["owner", "carrierAdmin"].includes(ctx.profile.role);
   const box = card("Docs to review", h("span", { class: "muted small" }, "From drivers · goes to the carrier and dispatch"), body);
-  let limit = 25, last = [];
+  let limit = 25, last = [], shownIds = new Set();
   const reject = async (d, reason) => {
     const ok = await guard(() => updateDoc(doc(db, "documents", d.id), { status: "rejected", rejectReason: reason, reviewedBy: ctx.uid, reviewedAt: serverTimestamp() }), reason === "duplicate" ? "Duplicate rejected" : "Rejected");
     if (ok !== null) removeFromDrive(d.id);
@@ -321,7 +340,9 @@ export function docsReviewQueue(ctx, carrierIds, onCount) {
     last = docs;
     docs.sort((a, b) => -byNewest(a, b)); // oldest first: first in, first reviewed
     onCount && onCount(docs.length);
-    forgetCleanChecks(); // something new may have arrived that duplicates an older one
+    const ids = new Set(docs.map((d) => d.id));
+    forgetChecks(new Set([...shownIds].filter((id) => !ids.has(id))));
+    shownIds = ids;
     body.replaceChildren(docs.length ? h("div", { class: "list" }, docs.slice(0, limit).map((d) => {
       const flag = h("div", { class: "dupe-slot" });
       const dupBtn = btn("Reject duplicate", () => reject(d, "duplicate"), "warn", { hidden: true });
