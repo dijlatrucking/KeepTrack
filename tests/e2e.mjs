@@ -508,6 +508,28 @@ await run("Dispatcher sees the BOL in the review queue, opens the scan, and appr
   await toast(dispatcher, "Approved");
 });
 
+await run("Driver sees their own uploads: what's approved, waiting or not accepted, and can open them", async () => {
+  // on the load itself
+  const sent = driver.locator(".sent-box").first();
+  await sent.locator(".row", { hasText: "BOL" }).filter({ hasText: "Approved" }).first().waitFor();
+  await sent.locator(".row", { hasText: "Lumper" }).filter({ hasText: "Approved" }).first().waitFor();
+  // the My uploads page
+  await nav(driver, "My uploads");
+  const list = driver.locator(".card", { hasText: "Everything you've sent" });
+  await list.locator(".row", { hasText: "Lumper receipt" }).filter({ hasText: "Not accepted" }).getByText(/already on file/).waitFor();
+  await driver.locator(".chip", { hasText: "Not accepted" }).click();
+  if (await list.locator(".row", { hasText: "BOL" }).count()) throw new Error("Filter didn't hide approved papers");
+  await driver.locator(".chip", { hasText: "All" }).click();
+  await driver.getByLabel("Search my uploads").fill("walmart");
+  await list.locator(".row", { hasText: "Lumper at Walmart DC" }).first().waitFor();
+  await driver.getByLabel("Search my uploads").fill("");
+  const row = list.locator(".row", { hasText: "BOL" }).first();
+  const [popup] = await Promise.all([driver.waitForEvent("popup"), row.getByRole("button", { name: "View" }).click()]);
+  await popup.waitForURL(/^blob:/, { timeout: 10000 });
+  await popup.close();
+  await nav(driver, "Loads");
+});
+
 await run("Approved BOL shows up in the carrier's vault and search finds it", async () => {
   await carrier.getByText(/BOL · #/).first().waitFor();
   const search = carrier.getByLabel("Search documents");
@@ -861,7 +883,7 @@ await run("Rinse and repeat: a new scan after freeing is counted, backed up and 
 
 // ---------- 8. Phone layout ----------
 await run("Driver screens fit a phone with no sideways scrolling", async () => {
-  for (const view of ["Loads", "Uploads", "Pay"]) {
+  for (const view of ["Loads", "My uploads", "Pay"]) {
     await nav(driver, view);
     await driver.waitForTimeout(400);
     const o = await overflow(driver);

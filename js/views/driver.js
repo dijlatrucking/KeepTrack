@@ -1,9 +1,27 @@
 import { db, collection, doc, updateDoc, query, where, serverTimestamp } from "../fb.js";
 import { h, card, stat, money, num, field, input, select, btn, guard, pill, fmtDate, ago, toDate, table, toast } from "../ui.js";
 import { watch, byNewest } from "../data.js";
-import { lane, shortId, uploadDoc, scanPicker, saveScans } from "../components.js";
+import { lane, shortId, uploadDoc, scanPicker, saveScans, openDoc, moreButton } from "../components.js";
 
 const mine = (ctx, coll, field) => query(collection(db, coll), where("carrierId", "==", ctx.profile.carrierId), where(field, "==", ctx.uid));
+
+// One of the driver's own uploads: what it is, where it stands, and a button to look at it again.
+const DRIVER_STATUS = { pending: "Waiting for review", approved: "Approved", rejected: "Not accepted", filed: "Filed" };
+function uploadRow(d, { showLoad = true } = {}) {
+  const why = d.status === "rejected"
+    ? (d.rejectReason === "duplicate" ? "Not accepted: this was already on file, so it's not needed twice." : "Not accepted. Send a clearer photo if dispatch asks for one.")
+    : null;
+  return h("div", { class: "row col" },
+    h("div", { class: "row-top" },
+      h("div", { class: "review-main" },
+        h("div", { class: "badge-kind" }, (d.kind || "DOC").slice(0, 4).toUpperCase()),
+        h("div", { class: "grow" },
+          h("div", { class: "strong" }, d.name || d.kind || "Document"),
+          h("div", { class: "muted small" }, [showLoad ? d.loadLabel : null, d.amount ? money(d.amount) : null, ago(d.createdAt)].filter(Boolean).join(" · ")),
+          d.note ? h("div", { class: "small" }, d.note) : null)),
+      h("div", { class: "row-meta" }, pill(d.status, DRIVER_STATUS[d.status]), btn("View", () => openDoc(d)))),
+    why ? h("div", { class: "small muted" }, why) : null);
+}
 
 function uploader(ctx, load) {
   const kindSel = select("kind", [{ value: "BOL", label: "BOL" }, { value: "POD", label: "Signed POD" }, { value: "Lumper", label: "Lumper receipt" }, { value: "Receipt", label: "Other receipt" }, { value: "Other", label: "Other" }]);
@@ -61,6 +79,14 @@ function home(ctx, root) {
   const recent = h("div");
   let myLoads = [];
   const receipts = receiptsCard(ctx, () => myLoads);
+  // what the driver already sent for each active load, kept live
+  let myDocs = [];
+  const sentBoxes = new Map();
+  const drawSent = () => sentBoxes.forEach((box, loadId) => {
+    const docs = myDocs.filter((d) => d.loadId === loadId).sort(byNewest);
+    box.replaceChildren(...(docs.length ? [h("div", { class: "muted small upper" }, "Sent for this load"), h("div", { class: "list" }, docs.map((d) => uploadRow(d, { showLoad: false })))] : []));
+  });
+  ctx.sub(watch(mine(ctx, "documents", "uploadedBy"), (docs) => { myDocs = docs; drawSent(); }));
   ctx.sub(watch(mine(ctx, "loads", "driverId"), (loads) => {
     myLoads = loads;
     loads.sort(byNewest);
@@ -76,7 +102,10 @@ function home(ctx, root) {
       h("div", { class: "row-inline" },
         l.status === "booked" ? btn("Picked up", () => guard(() => updateDoc(doc(db, "loads", l.id), { status: "in_transit", updatedAt: serverTimestamp() }), "Marked picked up"), "dark") : null,
         l.status === "in_transit" ? btn("Delivered", () => guard(() => updateDoc(doc(db, "loads", l.id), { status: "delivered", updatedAt: serverTimestamp() }), "Marked delivered"), "ok") : null),
-      uploader(ctx, l))) : [card(null, null, h("p", { class: "empty" }, "No active loads. Your dispatcher will assign one."))]));
+      uploader(ctx, l),
+      (() => { const box = h("div", { class: "sent-box" }); sentBoxes.set(l.id, box); return box; })())) : [card(null, null, h("p", { class: "empty" }, "No active loads. Your dispatcher will assign one."))]));
+    for (const id of [...sentBoxes.keys()]) if (!now.some((l) => l.id === id)) sentBoxes.delete(id);
+    drawSent();
     receipts.refresh();
     recent.replaceChildren(table([
       { label: "Load", cell: (l) => h("span", { class: "mono" }, shortId(l.id)) },
@@ -89,14 +118,30 @@ function home(ctx, root) {
 }
 
 function uploads(ctx, root) {
+  const tiles = h("div", { class: "stats stats-compact" });
   const body = h("div");
-  ctx.sub(watch(mine(ctx, "documents", "uploadedBy"), (docs) => body.replaceChildren(table([
-    { label: "Document", cell: (d) => h("span", { class: "strong" }, d.name) },
-    { label: "Load", cell: (d) => d.loadLabel || "—" },
-    { label: "Sent", cell: (d) => ago(d.createdAt) },
-    { label: "Status", cell: (d) => pill(d.status) },
-  ], docs.sort(byNewest), "Nothing uploaded yet."))));
-  root.append(card("My uploads", null, body));
+  const chips = h("div", { class: "chips", "aria-label": "Show" });
+  let docs = [], show = "all", term = "", limit = 50;
+  const FILTERS = [["all", "All"], ["pending", "Waiting"], ["approved", "Approved"], ["rejected", "Not accepted"]];
+  const draw = () => {
+    tiles.replaceChildren(
+      stat("Waiting for review", String(docs.filter((d) => d.status === "pending").length)),
+      stat("Approved", String(docs.filter((d) => d.status === "approved").length)),
+      stat("Not accepted", String(docs.filter((d) => d.status === "rejected").length)));
+    chips.replaceChildren(...FILTERS.map(([v, label]) => h("button", { type: "button", class: "chip" + (show === v ? " on" : ""), "aria-pressed": String(show === v), onClick: () => { show = v; limit = 50; draw(); } }, label)));
+    const t = term.toLowerCase();
+    const shown = docs.filter((d) => (show === "all" || d.status === show)
+      && (!t || [d.name, d.kind, d.receiptType, d.loadLabel, d.note, d.amount ? String(d.amount) : ""].filter(Boolean).join(" ").toLowerCase().includes(t)))
+      .sort(byNewest);
+    body.replaceChildren(shown.length
+      ? h("div", { class: "list" }, shown.slice(0, limit).map((d) => uploadRow(d)), moreButton(shown.length, limit, () => { limit += 50; draw(); }))
+      : h("p", { class: "empty" }, docs.length ? "Nothing matches." : "Nothing uploaded yet. Photos you send from the Loads page show up here."));
+  };
+  const search = input("q", { type: "search", placeholder: "Search: BOL, lumper, load #…", "aria-label": "Search my uploads" });
+  search.addEventListener("input", () => { term = search.value.trim(); limit = 50; draw(); });
+  ctx.sub(watch(mine(ctx, "documents", "uploadedBy"), (r) => { docs = r; draw(); }));
+  draw();
+  root.append(tiles, card("My uploads", null, h("p", { class: "muted small" }, "Everything you've sent: BOLs, PODs and receipts. Tap View to see the photo again."), search, chips, body));
 }
 
 function pay(ctx, root) {
@@ -118,6 +163,6 @@ function pay(ctx, root) {
 
 export default [
   { id: "home", label: "Loads", render: home },
-  { id: "uploads", label: "Uploads", render: uploads },
+  { id: "uploads", label: "My uploads", render: uploads },
   { id: "pay", label: "Pay", render: pay },
 ];

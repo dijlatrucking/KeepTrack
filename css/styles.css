@@ -277,3 +277,6 @@ details.stub summary { display: flex; justify-content: space-between; gap: 12px;
 .stats-compact { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
 .stats-compact .stat { padding: 12px 14px; }
 .stats-compact .stat-value { font-size: 24px; }
+.sent-box:empty { display: none; }
+.sent-box { display: flex; flex-direction: column; gap: 4px; border-top: 1px solid var(--line-soft); padding-top: 10px; }
+.sent-box .row { padding: 8px 0; }
