@@ -284,11 +284,11 @@ await run("Dispatcher scans a rate con PDF and the load fills itself in", async 
   const got = { origin: await val("Pickup (City, ST)"), dest: await val("Delivery (City, ST)"), rate: await val("Rate ($)"), miles: await val("Loaded miles"), broker: await val("Broker"), no: await val("Load #") };
   if (got.origin !== "Boise, ID" || got.dest !== "Denver, CO" || Number(got.rate) !== 2000 || got.miles !== "500" || got.broker !== "TQL" || got.no !== "4471823")
     throw new Error("Rate con read wrong: " + JSON.stringify(got));
-  if ((await F.getByLabel("Truck", { exact: true }).inputValue()) === "") throw new Error("Truck # 7 on the rate con didn't pick Unit 7");
+  if ((await F.locator('select[name="truckId"]').inputValue()) === "") throw new Error("Truck # 7 on the rate con didn't pick Unit 7");
   const fee = await F.getByLabel("Dispatch fee ($)").inputValue();
   if (fee !== "160.00") throw new Error("Fee auto-fill was " + fee);
   await dispatcher.locator("select[name=driverId] option", { hasText: "Drew Driver" }).waitFor({ state: "attached" });
-  await F.getByLabel("Driver", { exact: true }).selectOption({ label: "Drew Driver" });
+  await F.locator('select[name="driverId"]').selectOption({ label: "Drew Driver" });
   await F.getByRole("button", { name: "Save load", exact: true }).click();
   await toast(dispatcher, "Load booked with paperwork");
   await dispatcher.locator(".item-lane", { hasText: "Boise, ID → Denver, CO" }).first().waitFor();
@@ -476,7 +476,7 @@ await run("Carrier adds monthly insurance and past-due charges post themselves o
   await carrier.getByRole("button", { name: "All expenses", exact: true }).click();
   await carrier.locator(".chip", { hasText: "All time" }).first().click();
   await carrier.waitForTimeout(1500); // a second device/listener must not double-post
-  const n = await carrier.locator(".item", { hasText: "Progressive insurance" }).count();
+  const n = await carrier.locator(".items").first().locator(".item", { hasText: "Progressive insurance" }).count();
   if (n !== 2) throw new Error(`Expected 2 posted insurance charges, found ${n}`);
 });
 
