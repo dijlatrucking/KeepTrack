@@ -85,7 +85,7 @@ h2 { font-size: 19px; font-weight: 700; }
 .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 18px; align-items: start; }
 .list { display: flex; flex-direction: column; }
 .row { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-top: 1px solid var(--line-soft); flex-wrap: wrap; }
-.row.col { flex-direction: column; align-items: stretch; gap: 8px; }
+.row.col { flex-direction: column; flex-wrap: nowrap; align-items: stretch; gap: 8px; }
 .row-top { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
 .row-meta { display: flex; align-items: center; gap: 8px; }
 .row-inline { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; }
