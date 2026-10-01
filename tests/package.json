@@ -1,0 +1,13 @@
+{
+  "name": "keeptrack-tests",
+  "private": true,
+  "type": "module",
+  "description": "Security-rule attack tests and end-to-end stress tests for KeepTrack, run against local Firebase emulators.",
+  "devDependencies": {
+    "@firebase/rules-unit-testing": "^3.0.4",
+    "firebase": "^10.12.2",
+    "firebase-tools": "^13.35.1",
+    "playwright": "^1.47.0",
+    "pngjs": "^7.0.0"
+  }
+}

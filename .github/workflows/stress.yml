@@ -1,0 +1,39 @@
+name: Stress test
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: tests
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - name: Install test tools
+        run: npm install --no-audit --no-fund
+      - name: Install headless browser
+        run: npx playwright install --with-deps chromium
+      - name: Security rules attack tests
+        run: npx firebase emulators:exec --only firestore --project demo-keeptrack "node rules.test.mjs"
+      - name: End-to-end and volume stress test
+        if: always()
+        run: npx firebase emulators:exec --only firestore,auth --project demo-keeptrack "node e2e.mjs"
+      - name: Save screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshots
+          path: tests/out
+          if-no-files-found: ignore
