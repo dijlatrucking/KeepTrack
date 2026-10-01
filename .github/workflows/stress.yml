@@ -12,6 +12,7 @@ jobs:
     defaults:
       run:
         working-directory: tests
+        shell: bash
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -26,10 +27,17 @@ jobs:
       - name: Install headless browser
         run: npx playwright install --with-deps chromium
       - name: Security rules attack tests
-        run: npx firebase emulators:exec --only firestore --project demo-keeptrack "node rules.test.mjs"
+        run: |
+          set -o pipefail
+          npx firebase emulators:exec --only firestore --project demo-keeptrack "node rules.test.mjs" 2>&1 | tee rules.log
       - name: End-to-end and volume stress test
         if: always()
-        run: npx firebase emulators:exec --only firestore,auth --project demo-keeptrack "node e2e.mjs"
+        run: |
+          set -o pipefail
+          npx firebase emulators:exec --only firestore,auth --project demo-keeptrack "node e2e.mjs" 2>&1 | tee e2e.log
+      - name: Post logs as notes
+        if: always()
+        run: node report-logs.mjs rules.log e2e.log
       - name: Save screenshots
         if: always()
         uses: actions/upload-artifact@v4
