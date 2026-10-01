@@ -53,6 +53,8 @@ await env.withSecurityRulesDisabled(async (c) => {
   await put("invites/OWN2", { role: "driver", carrierId: "A", used: false, createdBy: "adminA" });
   await put("requests/R1", { carrierId: "A", createdBy: "adminA", status: "open", text: "Reno to Boise" });
   await put("requests/R2", { carrierId: "B", createdBy: "adminB", status: "open", text: "Denver" });
+  await put("expenses/EA", { carrierId: "A", cat: "Insurance", amount: 1200 });
+  await put("expenses/EB", { carrierId: "B", cat: "Fuel", amount: 300 });
   await put("paystubs/P1", { carrierId: "A", driverId: "drvA1", net: 500 });
   await put("paystubs/P2", { carrierId: "A", driverId: "drvA2", net: 600 });
 });
@@ -236,10 +238,6 @@ await deny("carrier admin issues a paystub for carrier B", () => addDoc(collecti
 await deny("carrier admin reads pending sign-ups", () => getDocs(q(a, "users", eq("role", "pending"))));
 
 // ---------- Expenses walls ----------
-await env.withSecurityRulesDisabled(async (c) => {
-  await setDoc(doc(c.firestore(), "expenses/EA"), { carrierId: "A", cat: "Insurance", amount: 1200 });
-  await setDoc(doc(c.firestore(), "expenses/EB"), { carrierId: "B", cat: "Fuel", amount: 300 });
-});
 await deny("driver reads company expenses", () => getDocs(q(d, "expenses", eq("carrierId", "A"))));
 await deny("driver adds an expense", () => addDoc(collection(d, "expenses"), { carrierId: "A", cat: "Fuel", amount: 1 }));
 await deny("carrier B admin deletes carrier A's expense", () => deleteDoc(doc(as("adminB"), "expenses/EA")));
