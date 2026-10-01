@@ -1,19 +1,17 @@
-/**
- * KeepTrack → Google Drive
- *
- * Paste this whole file into a new Apps Script project (script.google.com), then
- * Deploy → New deployment → Web app → Execute as: Me → Who has access: Anyone → Deploy.
- * Copy the Web app URL into KeepTrack → Settings → Google Drive.
- * Updating later: paste the new version, save, then Deploy → Manage deployments → edit (pencil)
- * → Version: New version → Deploy. The URL stays the same.
- *
- * How it stays safe:
- *  - KeepTrack sends only the signed-in user's Firebase ID token and document ids. No file data.
- *  - This script checks the token with Firebase, then reads each document and its scan from Firestore
- *    *as that user*, so KeepTrack's security rules decide what they're allowed to send or open.
- *  - Backups and "free up space" checks only run for the KeepTrack owner.
- *  - Files land in your Drive under KeepTrack/<Carrier>/...; nobody else gets Drive access.
- */
+// KeepTrack → Google Drive
+//
+// Paste this whole file into a new Apps Script project (script.google.com), then
+// Deploy → New deployment → Web app → Execute as: Me → Who has access: Anyone → Deploy.
+// Copy the Web app URL into KeepTrack → Settings → Google Drive.
+// Updating later: paste the new version, save, then Deploy → Manage deployments → edit (pencil)
+// → Version: New version → Deploy. The URL stays the same.
+//
+// How it stays safe:
+// - KeepTrack sends only the signed-in user's Firebase ID token and document ids. No file data.
+// - This script checks the token with Firebase, then reads each document and its scan from Firestore
+//   *as that user*, so KeepTrack's security rules decide what they're allowed to send or open.
+// - Backups and "free up space" checks only run for the KeepTrack owner.
+// - Files land in your Drive under KeepTrack/<Carrier>/...; nobody else gets Drive access.
 
 const FIREBASE_API_KEY = "AIzaSyAD09pk9OyApPn6f8OCiCFr-PpYT17sEHU";
 const PROJECT_ID = "keeptrack-6426e";

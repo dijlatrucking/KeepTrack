@@ -756,6 +756,13 @@ await run("Owner denies a sign-up and that person stays locked out", async () =>
   delete pages.denied;
 });
 
+await run("The Drive script parses and has nothing a phone paste would mangle", async () => {
+  const gs = readFileSync(ROOT + "drive/KeepTrackDrive.gs", "utf8");
+  // Phone keyboards paste by "typing", and the editor then auto-closes /** comments with a stray */ at the end.
+  if (gs.includes("/*")) throw new Error("Use // comments in the Drive script, not /* */");
+  new Function(gs);
+});
+
 // ---------- 7b. Storage, backup to Drive, free up space ----------
 const adminDocs = async (coll) => { let out = []; await seed(async (db) => { out = (await getDocs(collection(db, coll))).docs.map((d) => ({ id: d.id, ...d.data() })); }); return out; };
 const tile = (p, label) => p.locator(".stat", { has: p.locator(".stat-label", { hasText: label }) }).locator(".stat-value");
