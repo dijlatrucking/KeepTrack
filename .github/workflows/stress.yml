@@ -26,7 +26,12 @@ jobs:
         run: npm install --no-audit --no-fund
       - name: Install headless browser
         run: npx playwright install --with-deps chromium
+      - name: Google Drive script (fake Drive)
+        run: |
+          set -o pipefail
+          node drive-script.test.mjs 2>&1 | tee drive.log
       - name: Security rules attack tests
+        if: always()
         run: |
           set -o pipefail
           npx firebase emulators:exec --only firestore --project demo-keeptrack "node rules.test.mjs" 2>&1 | tee rules.log
@@ -37,7 +42,7 @@ jobs:
           npx firebase emulators:exec --only firestore,auth --project demo-keeptrack "node e2e.mjs" 2>&1 | tee e2e.log
       - name: Post logs as notes
         if: always()
-        run: node report-logs.mjs rules.log e2e.log
+        run: node report-logs.mjs drive.log rules.log e2e.log
       - name: Save screenshots
         if: always()
         uses: actions/upload-artifact@v4

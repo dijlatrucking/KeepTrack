@@ -301,7 +301,7 @@ function settingsView(ctx, root) {
       h("li", null, "Tap ", h("b", null, "Deploy → New deployment"), ", pick type ", h("b", null, "Web app"), ". Execute as: ", h("b", null, "Me"), ". Who has access: ", h("b", null, "Anyone"), ". Deploy, then allow access when Google asks."),
       h("li", null, "Copy the ", h("b", null, "Web app URL"), " and paste it here, then tap ", h("b", null, "Save and test"), ".")),
     copyScript, form,
-    h("p", { class: "muted small" }, "Folders: KeepTrack / Carrier / Drivers / Driver name / (Load folders, Receipts) · Carrier / Loads / Load · Carrier / Company / Insurance, W-9… · Carrier / Receipts · Backups (one sheet per backup).")));
+    h("p", { class: "muted small" }, "How files are filed: KeepTrack / Carrier / Loads / 2026-10 / “Oct 01 · 4471823 · Boise ID → Denver CO” holds everything for that load (rate con, BOL, POD, lumper), named like “2026-10-01 · BOL · 4471823”. Driver receipts with no load go to Carrier / Driver receipts / driver name. Insurance, W-9 and other company papers go to Carrier / Company. Backups holds one sheet per backup.")));
 }
 
 export default [
