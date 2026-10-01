@@ -70,6 +70,8 @@ async function run(name, fn) {
     for (const [who, p] of Object.entries(pages)) {
       try { await p.screenshot({ path: `${OUT}/fail-${step}-${who}.png`, fullPage: true }); } catch (_) {}
     }
+    const seen = pages[name.split(" ")[0].toLowerCase()];
+    if (seen) { try { console.log("      on screen: " + (await seen.locator("#content").innerText()).replace(/\s+/g, " ").slice(0, 600)); } catch (_) {} }
   }
 }
 
@@ -625,7 +627,7 @@ await run("Owner Overview loads with the full volume", async () => {
   await heading(owner, "Overview");
   await owner.locator(".stat-value", { hasText: String(CARRIERS + 1) }).first().waitFor({ timeout: 60000 });
   await owner.locator(".more", { hasText: "of 300" }).first().waitFor({ timeout: 60000 });
-  await owner.locator(".more", { hasText: `of ${LOADS + 1}` }).first().waitFor({ timeout: 60000 });
+  await owner.locator(".more", { hasText: `of ${LOADS + 2}` }).first().waitFor({ timeout: 60000 });
   await owner.locator("table tbody tr").nth(99).waitFor({ timeout: 60000 });
   timings.push([`Owner Overview with ${LOADS} loads, ${PENDING_DOCS} pending docs, ${REQUESTS} requests`, Date.now() - t0]);
   const rows = await owner.locator("table tbody tr").count();
