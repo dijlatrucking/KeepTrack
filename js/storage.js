@@ -5,7 +5,7 @@
 // fetches the scan back from Drive.
 import {
   db, collection, doc, getDoc, getDocs, setDoc, query, where, writeBatch, serverTimestamp, deleteField,
-  getAggregateFromServer, getCountFromServer, sum, count,
+  getAggregateFromServer, getCountFromServer, sum,
 } from "./fb.js";
 import { h, card, btn, stat, toast, STATUS } from "./ui.js";
 import { driveUrl, driveCall } from "./drive.js";
@@ -30,14 +30,17 @@ const allDocs = async () => (await getDocs(collection(db, "documents"))).docs.ma
 async function scanUsage() {
   const docsCol = collection(db, "documents");
   try {
-    const [a, freed, cleared, measured, backed] = await Promise.all([
-      getAggregateFromServer(docsCol, { n: count(), bytes: sum("size") }),
+    // Count on its own: an aggregate that also sums "size" can skip records that have no size
+    // (papers saved before sizes were recorded), which would hide them from the meter.
+    const [all, a, freed, cleared, measured, backed] = await Promise.all([
+      getCountFromServer(docsCol),
+      getAggregateFromServer(docsCol, { bytes: sum("size") }),
       getCountFromServer(query(docsCol, where("fileFreed", "==", true))),
       getCountFromServer(query(docsCol, where("fileCleared", "==", true))),
       getCountFromServer(query(docsCol, where("size", ">", 0))),
       getCountFromServer(query(docsCol, where("backedUpAt", "!=", null))),
     ]);
-    const total = a.data().n, bytes = a.data().bytes || 0, f = freed.data().count, c = cleared.data().count;
+    const total = all.data().count, bytes = a.data().bytes || 0, f = freed.data().count, c = cleared.data().count;
     return { total, held: total - f - c, freed: f, cleared: c, measured: measured.data().count, bytes, backed: backed.data().count };
   } catch (e) {
     // No aggregate queries available: add the records up here instead.
