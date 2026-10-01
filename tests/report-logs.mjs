@@ -9,7 +9,11 @@ for (const file of process.argv.slice(2)) {
     .split("\n")
     .filter((l) => l.trim() && !/^::/.test(l) && !/Downloading|Progress:|▕|░|█|@firebase\/firestore|evaluation error|^false for|Property .* is undefined|segments|simple:|path_value|^\s*[}\]]/.test(l))
     .map((l) => l.replace(/^PASS  /, "✓ ").replace(/^FAIL  /, "✗ FAIL "));
-  const text = lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "").slice(-14000);
+  // first, the first few failures in full (they usually explain the rest)
+  const fails = [];
+  lines.forEach((l, i) => { if (/✗ FAIL/.test(l) && fails.length < 4) fails.push(lines.slice(i, i + 5).filter((x) => !/Call log/.test(x)).join("\n").slice(0, 700)); });
+  if (fails.length) console.log(`::notice title=${file} first failures::${esc(fails.join("\n").replace(/\x1b\[[0-9;]*m/g, ""))}`);
+  const text = lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "").slice(-10500);
   const chunks = [];
   for (let i = 0; i < text.length && chunks.length < 4; i += 3500) chunks.push(text.slice(i, i + 3500));
   chunks.forEach((c, i) => console.log(`::notice title=${file} (${i + 1}/${chunks.length})::${esc(c)}`));

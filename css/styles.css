@@ -25,6 +25,7 @@
 }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; } /* hidden always wins over a component's own display */
 html, body { margin: 0; }
 body { background: var(--ground); color: var(--ink); font-family: var(--body); font-size: 15px; line-height: 1.45; }
 a { color: var(--accent); }
