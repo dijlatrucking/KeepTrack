@@ -945,6 +945,8 @@ await run("Owner edits a load's broker #: its papers are re-filed in Drive", asy
   await toast(owner, "Load saved");
   await waitFor(() => papers.every((d) => driveCalls.slice(calls).some((c) => c.docId === d.id && c.ok)), "Not every paper on the load was re-filed");
   if ((await adminDocs("loads")).find((l) => l.id === L.id).loadNo !== "4471999") throw new Error("Load # didn't save");
+  await seed((db) => setDoc(doc(db, "loads", L.id), { loadNo: "4471823" }, { merge: true })); // later steps search for it
+  await nav(owner, "Overview");
 });
 
 await run("Driver takes back a wrong upload before it's reviewed (and its Drive copy goes too)", async () => {
