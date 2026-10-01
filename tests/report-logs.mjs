@@ -9,7 +9,7 @@ for (const file of process.argv.slice(2)) {
     .split("\n")
     .filter((l) => l.trim() && !/^::/.test(l) && !/Downloading|Progress:|▕|░|█/.test(l))
     .map((l) => l.replace(/^PASS  /, "✓ ").replace(/^FAIL  /, "✗ FAIL "));
-  const text = lines.join("\n").slice(-14000);
+  const text = lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "").slice(-14000);
   const chunks = [];
   for (let i = 0; i < text.length && chunks.length < 4; i += 3500) chunks.push(text.slice(i, i + 3500));
   chunks.forEach((c, i) => console.log(`::notice title=${file} (${i + 1}/${chunks.length})::${esc(c)}`));
