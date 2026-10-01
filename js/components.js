@@ -269,7 +269,7 @@ export function findDuplicate(d) {
           .filter((x) => why !== "amount" || (d.loadId ? x.loadId === d.loadId : Math.abs(day(x) - day(d)) <= 2))
           .sort(byNewest).pop();
         if (other) return { why, other };
-      } catch (e) { /* missing index or no access: just don't flag */ }
+      } catch (e) { console.warn("[dupe] check skipped:", why, e && (e.code || e.message)); /* missing index or no access: just don't flag */ }
     }
     cleanChecks.add(d.id);
     return null;

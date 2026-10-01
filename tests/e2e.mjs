@@ -113,6 +113,7 @@ async function open(who, viewport = { width: 1280, height: 900 }) {
   p.on("pageerror", (e) => problems.push(`[${who}] page error: ${e.message}`));
   p.on("console", (m) => {
     if (m.type() === "error" && !/favicon|ERR_FAILED.*fonts/.test(m.text())) problems.push(`[${who}] console: ${m.text().slice(0, 200)}`);
+    if (/^\[dupe\]/.test(m.text())) console.log(`      [${who}] ${m.text().slice(0, 200)}`);
   });
   pages[who] = p;
   await p.goto(BASE);
@@ -401,7 +402,12 @@ await run("Driver sends the same $85 lumper again (new photo): it's flagged as a
   await R.getByRole("button", { name: "Send receipt" }).click();
   await toast(driver, "Receipt sent to dispatch");
   const queue = carrier.locator(".card", { hasText: "Docs to review" });
-  await queue.locator(".row", { hasText: "Lumper receipt" }).filter({ hasText: "Possible duplicate" }).first().waitFor();
+  try {
+    await queue.locator(".row", { hasText: "Lumper receipt" }).filter({ hasText: "Possible duplicate" }).first().waitFor();
+  } catch (e) {
+    console.log("      carrier queue: " + (await queue.first().innerText()).replace(/\s+/g, " ").slice(0, 900));
+    throw e;
+  }
 });
 
 await run("Carrier rejects the duplicate, approves the real lumper, and it becomes an expense on the load", async () => {

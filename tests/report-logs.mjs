@@ -11,7 +11,7 @@ for (const file of process.argv.slice(2)) {
     .map((l) => l.replace(/^PASS  /, "✓ ").replace(/^FAIL  /, "✗ FAIL "));
   // first, the first few failures in full (they usually explain the rest)
   const fails = [];
-  lines.forEach((l, i) => { if (/✗ FAIL/.test(l) && fails.length < 4) fails.push(lines.slice(i, i + 5).filter((x) => !/Call log/.test(x)).join("\n").slice(0, 700)); });
+  lines.forEach((l, i) => { if (/✗ FAIL/.test(l) && fails.length < 4) fails.push(lines.slice(i, i + 8).filter((x) => !/Call log|^\s*- /.test(x)).join("\n").slice(0, 1600)); });
   if (fails.length) console.log(`::notice title=${file} first failures::${esc(fails.join("\n").replace(/\x1b\[[0-9;]*m/g, ""))}`);
   const text = lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "").slice(-10500);
   const chunks = [];
