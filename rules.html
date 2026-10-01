@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KeepTrack · Security rules</title>
+<meta name="robots" content="noindex">
+<style>
+  body { margin: 0; font-family: system-ui, sans-serif; background: #F3F2EE; color: #15171C; }
+  main { max-width: 760px; margin: 0 auto; padding: 24px 16px 48px; display: flex; flex-direction: column; gap: 14px; }
+  h1 { margin: 0; font-size: 24px; }
+  ol { margin: 0; padding-left: 20px; line-height: 1.6; }
+  button { min-height: 52px; border: 0; border-radius: 10px; background: #A8490F; color: #fff; font: inherit; font-weight: 700; font-size: 17px; cursor: pointer; }
+  pre { background: #fff; border: 1px solid #DEDBD3; border-radius: 10px; padding: 12px; font-size: 12px; overflow: auto; max-height: 50vh; margin: 0; }
+  .msg { min-height: 1.4em; font-weight: 600; color: #24552D; margin: 0; }
+  .muted { color: #5A5F69; font-size: 14px; margin: 0; }
+</style>
+</head>
+<body>
+<main>
+  <h1>KeepTrack security rules</h1>
+  <ol>
+    <li>Tap <b>Copy rules</b> below.</li>
+    <li>In Firebase → Firestore → <b>Rules</b>: tap <b>Discard</b> if it shows unpublished changes.</li>
+    <li>Tap inside the editor, long-press → <b>Select all</b>, then delete. Make sure only an empty line 1 is left.</li>
+    <li>Long-press → <b>Paste</b>, then tap <b>Publish</b>.</li>
+  </ol>
+  <button type="button" id="copy">Copy rules</button>
+  <p class="msg" id="msg" role="status"></p>
+  <p class="muted" id="count"></p>
+  <pre id="rules">Loading…</pre>
+</main>
+<script>
+  const pre = document.getElementById("rules"), msg = document.getElementById("msg");
+  let text = "";
+  fetch("firestore.rules?v=" + Date.now()).then((r) => r.text()).then((t) => {
+    text = t;
+    pre.textContent = t;
+    document.getElementById("count").textContent = `${t.trimEnd().split("\n").length} lines. The last line is a single } and the first is rules_version = '2';`;
+  }).catch(() => { pre.textContent = "Couldn't load the rules. Refresh to try again."; });
+  document.getElementById("copy").onclick = async () => {
+    if (!text) return;
+    try { await navigator.clipboard.writeText(text); msg.textContent = "Copied. Now paste it into the empty Firebase editor."; }
+    catch (e) {
+      const r = document.createRange(); r.selectNodeContents(pre);
+      const s = getSelection(); s.removeAllRanges(); s.addRange(r);
+      msg.textContent = "Text selected. Tap Copy in the menu.";
+    }
+  };
+</script>
+</body>
+</html>
