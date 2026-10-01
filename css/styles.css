@@ -273,3 +273,7 @@ details.stub summary { display: flex; justify-content: space-between; gap: 12px;
 .meter-fill { height: 100%; width: 0; background: var(--ok); border-radius: 999px; transition: width .4s ease; }
 .meter-fill.warn { background: var(--accent); }
 .meter-fill.bad { background: var(--bad); }
+.scanmsg:empty { display: none; }
+.stats-compact { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+.stats-compact .stat { padding: 12px 14px; }
+.stats-compact .stat-value { font-size: 24px; }

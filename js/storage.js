@@ -138,7 +138,7 @@ export async function freeUpSpace(plan, onProgress = () => {}) {
 
 // ---------- Settings card ----------
 export function storageCard(ctx) {
-  const tiles = h("div", { class: "stats" }, stat("Storage used", "…", "Measuring"));
+  const tiles = h("div", { class: "stats stats-compact" }, stat("Storage used", "…", "Measuring"));
   const bar = h("div", { class: "meter-fill" });
   const meterText = h("p", { class: "small" });
   const last = h("p", { class: "muted small" });

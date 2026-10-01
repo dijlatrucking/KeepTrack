@@ -841,9 +841,11 @@ await run("Rinse and repeat: a new scan after freeing is counted, backed up and 
     return t && t.querySelector(".stat-value").textContent === "1";
   });
   const card = owner.locator(".card", { hasText: "Storage & backup" });
+  const rowsBefore = [...backupSheets.values()].flat().length;
   await card.getByRole("button", { name: "Back up to Drive" }).click();
   await toast(owner, "Backed up 1 scan to Google Drive");
-  if (backupSheets.size < 2) throw new Error("The second backup didn't get its own sheet");
+  const added = [...backupSheets.values()].flat().slice(rowsBefore);
+  if (added.length !== 1 || added[0][0] !== "Registrations") throw new Error("The new scan wasn't listed in a backup sheet: " + JSON.stringify(added));
   owner.once("dialog", (d) => d.accept());
   await card.getByRole("button", { name: "Free up space" }).click();
   await toast(owner, /Freed about .* \(1 scan\)/);
