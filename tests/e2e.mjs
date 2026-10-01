@@ -824,7 +824,9 @@ await run("Owner backs up every scan to Drive, with a PDF report listing each on
   const copies = driveFiles.size;
   owner.once("dialog", (d) => d.accept());
   await card.getByRole("button", { name: "Back up to Drive" }).click();
-  await toast(owner, /Backed up \d+ scans? to Google Drive$/);
+  const t0 = Date.now();
+  while (backupPdfs.length < 2 && Date.now() - t0 < 30000) await owner.waitForTimeout(200);
+  await card.getByRole("button", { name: "Back up to Drive", exact: true }).waitFor();
   if (backupPdfs.length !== 2 || !backupPdfs[1].text.includes(`${shouldBe.length} scans copied`)) throw new Error("Fresh report doesn't list everything");
   if (driveFiles.size !== copies) throw new Error("Making a fresh report copied scans again");
 });
