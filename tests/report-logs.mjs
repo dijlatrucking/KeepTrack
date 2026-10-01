@@ -7,7 +7,7 @@ for (const file of process.argv.slice(2)) {
   if (!existsSync(file)) { console.log(`::notice title=${file}::(no log written)`); continue; }
   const lines = readFileSync(file, "utf8")
     .split("\n")
-    .filter((l) => l.trim() && !/^::/.test(l) && !/Downloading|Progress:|▕|░|█/.test(l))
+    .filter((l) => l.trim() && !/^::/.test(l) && !/Downloading|Progress:|▕|░|█|@firebase\/firestore|evaluation error|^false for|Property .* is undefined|segments|simple:|path_value|^\s*[}\]]/.test(l))
     .map((l) => l.replace(/^PASS  /, "✓ ").replace(/^FAIL  /, "✗ FAIL "));
   const text = lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "").slice(-14000);
   const chunks = [];

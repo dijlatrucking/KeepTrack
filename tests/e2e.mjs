@@ -453,7 +453,7 @@ await run("Carrier scans a fuel receipt and the expense fills itself in", async 
 });
 
 await run("Carrier adds monthly insurance and past-due charges post themselves once", async () => {
-  await carrier.getByRole("button", { name: "Recurring" }).click();
+  await carrier.getByRole("button", { name: "Recurring", exact: true }).click();
   await carrier.getByRole("button", { name: "+ Add recurring charge" }).click();
   const f = carrier.locator(".form-card");
   await f.getByLabel("Name").fill("Progressive insurance");
@@ -464,7 +464,7 @@ await run("Carrier adds monthly insurance and past-due charges post themselves o
   await toast(carrier, "Recurring charge added");
   await toast(carrier, "Added 2 recurring charges");
   await carrier.locator(".stat", { hasText: "Fixed costs / month" }).locator(".stat-value", { hasText: "$1,200.00" }).waitFor();
-  await carrier.getByRole("button", { name: "All expenses" }).click();
+  await carrier.getByRole("button", { name: "All expenses", exact: true }).click();
   await carrier.locator(".chip", { hasText: "All time" }).first().click();
   await carrier.waitForTimeout(1500); // a second device/listener must not double-post
   const n = await carrier.locator(".item", { hasText: "Progressive insurance" }).count();

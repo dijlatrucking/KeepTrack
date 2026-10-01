@@ -459,7 +459,10 @@ export function loadsView(ctx, root, ids) {
   let st = null;
   search.addEventListener("input", () => { state.q = search.value.trim().toLowerCase(); state.limit = 50; draw(); });
   const closeForm = () => formSlot.replaceChildren();
-  const openForm = (l) => { formSlot.replaceChildren(loadForm(ctx, st, ids, l, closeForm)); formSlot.scrollIntoView({ block: "start", behavior: "smooth" }); };
+  // Buttons tapped before the data has arrived run as soon as it does (instead of doing nothing).
+  let pending = null;
+  const ready = (fn) => (st ? fn() : (pending = fn));
+  const openForm = (l) => ready(() => { formSlot.replaceChildren(loadForm(ctx, st, ids, l, closeForm)); formSlot.scrollIntoView({ block: "start", behavior: "smooth" }); });
 
   const setStage = (l, s) => guard(() => updateDoc(doc(db, "loads", l.id), { status: s, stageAt: today(), ...(s === "paid" ? { paidAt: today() } : {}), ...(s === "delivered" && !l.deliverBy ? { deliverBy: today() } : {}), updatedAt: serverTimestamp() }), `Marked ${stageLabel(s)}`);
 
@@ -554,10 +557,10 @@ export function loadsView(ctx, root, ids) {
       }, "primary")));
   };
 
-  watchOps(ctx, ids, (s) => { st = s; draw(); }, { expenses: false });
+  watchOps(ctx, ids, (s) => { st = s; draw(); if (pending) { const f = pending; pending = null; f(); } }, { expenses: false });
   root.append(
     stats,
-    h("div", { class: "row-inline" }, btn("+ New load", () => st && openForm(null), "primary"), btn("Loads report", () => st && report.replaceChildren(reportCard()), "ghost")),
+    h("div", { class: "row-inline" }, btn("+ New load", () => openForm(null), "primary"), btn("Loads report", () => ready(() => report.replaceChildren(reportCard())), "ghost")),
     report, formSlot, truckChips, stageChips, search, list);
 }
 
@@ -584,7 +587,9 @@ export function expensesView(ctx, root, ids) {
   const share = (e) => (state.truck === "all" || e.truckId === state.truck ? num(e.amount) : !e.truckId ? num(e.amount) / Math.max(1, trucksOf().length) : 0);
 
   const closeForm = () => formSlot.replaceChildren();
-  const openForm = (x) => { formSlot.replaceChildren(expenseForm(x)); formSlot.scrollIntoView({ block: "start", behavior: "smooth" }); };
+  let pending = null;
+  const ready = (fn) => (st ? fn() : (pending = fn));
+  const openForm = (x) => ready(() => { formSlot.replaceChildren(expenseForm(x)); formSlot.scrollIntoView({ block: "start", behavior: "smooth" }); });
 
   const expenseForm = (x) => {
     const carriers = ctx.carriers.filter((c) => ids.includes(c.id));
@@ -799,10 +804,10 @@ export function expensesView(ctx, root, ids) {
   };
 
   main.append(stats,
-    h("div", { class: "row-inline" }, btn("+ Add expense", () => st && openForm(null), "primary"), btn("Expenses report", () => st && report.replaceChildren(reportCard()), "ghost")),
+    h("div", { class: "row-inline" }, btn("+ Add expense", () => openForm(null), "primary"), btn("Expenses report", () => ready(() => report.replaceChildren(reportCard())), "ghost")),
     report, formSlot, truckChips, periodBar(state.per, draw), catSel, list);
-  rec.append(recStats, h("div", null, btn("+ Add recurring charge", () => st && openRec(null), "primary")), recForm, recList);
-  watchOps(ctx, ids, (s) => { st = s; draw(); postRecurring(ctx, s); });
+  rec.append(recStats, h("div", null, btn("+ Add recurring charge", () => ready(() => openRec(null)), "primary")), recForm, recList);
+  watchOps(ctx, ids, (s) => { st = s; draw(); postRecurring(ctx, s); if (pending) { const f = pending; pending = null; f(); } });
   root.append(seg, main, rec);
 }
 
