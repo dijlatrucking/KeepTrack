@@ -22,7 +22,7 @@ let viewSubs = [];
 let pendingAuthError = "";
 let signingUp = false;
 
-const brand = () => h("div", { class: "brand" }, h("span", { class: "brand-mark", "aria-hidden": "true" }, "✓"), h("span", null, "KeepTrack"));
+const brand = () => h("span", { class: "brand" }, h("span", { class: "brand-mark", "aria-hidden": "true" }, "✓"), h("span", null, "KeepTrack"));
 
 function clearView() {
   viewSubs.forEach((u) => { try { u(); } catch (_) {} });
@@ -134,34 +134,42 @@ function renderAuth(mode = "signin") {
     h("p", { class: "muted small" }, "Drivers: ask your carrier for an invite code instead."));
 
   const tab = (id, label) => h("button", { type: "button", role: "tab", class: "tab" + (mode === id ? " on" : ""), "aria-selected": String(mode === id), onClick: () => renderAuth(id) }, label);
-  root.replaceChildren(h("main", { class: "auth" },
+  root.replaceChildren(publicPage(
     h("div", { class: "auth-card" },
-      brand(),
+      h("h1", null, mode === "signin" ? "Sign in" : mode === "signup" ? "Join with an invite code" : "Request access"),
       h("p", { class: "muted" }, "Loads, paperwork and pay, all in one place."),
       h("div", { class: "tabs tabs-3", role: "tablist" }, tab("signin", "Sign in"), tab("signup", "Invite code"), tab("request", "Request access")),
       mode === "signin" ? signin : mode === "signup" ? signup : request,
-      err),
-    h("p", { class: "muted small center" }, "A Spartan Groups LLC service")));
+      err)));
 }
 
 function renderPending(user, profile) {
   clearView();
-  root.replaceChildren(h("main", { class: "auth" }, h("div", { class: "auth-card" }, brand(),
+  root.replaceChildren(publicPage(h("div", { class: "auth-card" },
     h("h1", null, "Request received"),
     h("p", null, `Thanks${profile.name ? ", " + profile.name.split(" ")[0] : ""}. Your ${profile.requestedRole === "dispatcher" ? "dispatcher" : "carrier"} account is waiting for approval.`),
     h("p", { class: "muted" }, "Keep this page open or sign back in later. It opens up automatically the moment you're approved."),
     btn("Sign out", () => signOut(auth)))));
 }
 
+// Public pages (sign in, waiting, setup) share a plain site header and footer.
+function publicPage(...body) {
+  return h("div", { class: "site" },
+    h("header", { class: "site-header" }, h("div", { class: "site-header-inner" }, brand())),
+    h("main", { class: "site-main auth" }, ...body),
+    h("footer", { class: "site-footer" }, h("div", { class: "site-footer-inner" },
+      h("span", null, `© ${new Date().getFullYear()} KeepTrack · A Spartan Groups LLC service`))));
+}
+
 function renderSetupNeeded() {
-  root.replaceChildren(h("main", { class: "auth" }, h("div", { class: "auth-card" }, brand(),
+  root.replaceChildren(publicPage(h("div", { class: "auth-card" },
     h("h1", null, "Almost there"),
     h("p", null, "Paste your Firebase web config into js/firebase-config.js, then reload. See the README for the full setup steps."))));
 }
 
 function renderNoProfile(user) {
   clearView();
-  root.replaceChildren(h("main", { class: "auth" }, h("div", { class: "auth-card" }, brand(),
+  root.replaceChildren(publicPage(h("div", { class: "auth-card" },
     h("h1", null, "Setting up your account…"),
     h("p", { class: "muted" }, `Signed in as ${user.email}. If this screen doesn't change, your account doesn't have access yet. Ask for a new invite code.`),
     btn("Sign out", () => signOut(auth)))));
@@ -182,7 +190,7 @@ async function renderShell(user, profile) {
   const views = role.views;
   const current = () => views.find((v) => "#" + v.id === location.hash) || views[0];
   const content = h("main", { class: "content", id: "content", tabindex: "-1" });
-  const nav = h("nav", { class: "side", "aria-label": "Main" });
+  const nav = h("nav", { class: "site-nav", id: "site-nav", "aria-label": "Main" });
   const title = h("h1", null);
 
   const ctx = {
@@ -209,14 +217,32 @@ async function renderShell(user, profile) {
   };
   window.onhashchange = show;
 
-  root.replaceChildren(
-    h("div", { class: "shell" },
-      h("header", { class: "topbar" },
-        brand(),
-        h("div", { class: "who" }, h("span", { class: "who-name" }, profile.name || user.email), h("span", { class: "who-role" }, role.label)),
-        btn("Sign out", () => signOut(auth), "ghost-dark")),
+  // Traditional website layout: header with logo + menu links, page content, footer.
+  const menuBtn = h("button", { type: "button", class: "menu-btn", "aria-expanded": "false", "aria-controls": "site-nav" }, "Menu");
+  const header = h("header", { class: "site-header" },
+    h("div", { class: "site-header-inner" },
+      h("a", { href: "#", class: "brand-link", "aria-label": "KeepTrack home" }, brand()),
+      menuBtn,
       nav,
-      content));
+      h("div", { class: "who" },
+        h("span", { class: "who-name" }, profile.name || user.email),
+        h("span", { class: "who-role" }, role.label),
+        btn("Sign out", () => signOut(auth), "link"))));
+  menuBtn.addEventListener("click", () => {
+    const open = header.classList.toggle("open");
+    menuBtn.setAttribute("aria-expanded", String(open));
+  });
+  nav.addEventListener("click", (e) => {
+    if (e.target.closest("a")) { header.classList.remove("open"); menuBtn.setAttribute("aria-expanded", "false"); }
+  });
+  root.replaceChildren(
+    h("div", { class: "site" },
+      header,
+      h("div", { class: "site-main" }, content),
+      h("footer", { class: "site-footer" },
+        h("div", { class: "site-footer-inner" },
+          h("span", null, `© ${new Date().getFullYear()} KeepTrack · A Spartan Groups LLC service`),
+          h("span", null, `Signed in as ${user.email}`)))));
   show();
 }
 

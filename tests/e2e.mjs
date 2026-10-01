@@ -88,7 +88,11 @@ async function open(who, viewport = { width: 1280, height: 900 }) {
 }
 const toast = (p, text) => p.locator(".toast", { hasText: text }).first().waitFor();
 const heading = (p, name) => p.getByRole("heading", { name, exact: true }).first().waitFor();
-const nav = (p, label) => p.locator("nav.side a", { hasText: label }).first().click();
+const nav = async (p, label) => {
+  const menu = p.locator(".menu-btn");
+  if (await menu.isVisible()) { if ((await menu.getAttribute("aria-expanded")) !== "true") await menu.click(); }
+  await p.locator("nav.site-nav a", { hasText: label }).first().click();
+};
 const overflow = async (p) => p.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
 const home = async (p) => { await p.evaluate(() => history.replaceState(null, "", location.pathname)); await p.reload(); };
 const iso = (days) => new Date(Date.now() + days * 86400000).toISOString().slice(0, 10);
