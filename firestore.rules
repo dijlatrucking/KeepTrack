@@ -170,6 +170,12 @@ service cloud.firestore {
       allow delete: if isOwner();
     }
 
+    // App-wide settings (e.g. the Google Drive script URL). Everyone signed in can read; only the owner changes them.
+    match /settings/{id} {
+      allow read: if hasProfile();
+      allow write: if isOwner();
+    }
+
     match /paystubs/{id} {
       allow read: if isOwner() || isCarrierAdmin(resource.data.carrierId)
         || (isDriverIn(resource.data.carrierId) && resource.data.driverId == request.auth.uid);

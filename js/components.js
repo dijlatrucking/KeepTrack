@@ -5,6 +5,7 @@ import {
 } from "./fb.js";
 import { h, card, table, pill, money, num, fmtDate, ago, field, input, select, btn, formToObj, guard, toast } from "./ui.js";
 import { watch, watchMany, perCarrier, scoped, byNewest } from "./data.js";
+import { sendToDrive } from "./drive.js";
 
 const LOAD_STATUSES = [
   { value: "booked", label: "Booked" },
@@ -112,6 +113,7 @@ export async function uploadDoc(ctx, file, meta) {
   });
   batch.set(doc(db, "docFiles", docRef.id), { carrierId: meta.carrierId, uploadedBy: ctx.uid, data });
   await batch.commit();
+  sendToDrive(docRef.id); // copy to Google Drive in the background (if connected)
   return docRef;
 }
 
@@ -231,7 +233,8 @@ export function docsReviewQueue(ctx, carrierIds, onCount) {
       h("div", { class: "badge-kind" }, (d.kind || "DOC").slice(0, 4).toUpperCase()),
       h("div", { class: "grow" },
         h("div", { class: "strong" }, d.name),
-        h("div", { class: "muted small" }, [d.uploaderName, ctx.carrierName(d.carrierId), d.loadLabel, ago(d.createdAt)].filter(Boolean).join(" · "))),
+        h("div", { class: "muted small" }, [d.uploaderName, ctx.carrierName(d.carrierId), d.loadLabel, d.amount ? money(d.amount) : null, ago(d.createdAt)].filter(Boolean).join(" · ")),
+        d.note ? h("div", { class: "small" }, d.note) : null),
       btn("View", () => openDoc(d)),
       btn("Approve", () => guard(() => updateDoc(doc(db, "documents", d.id), { status: "approved", reviewedBy: ctx.uid, reviewedAt: serverTimestamp() }), "Approved"), "ok"),
       btn("Reject", () => guard(() => updateDoc(doc(db, "documents", d.id), { status: "rejected", reviewedBy: ctx.uid, reviewedAt: serverTimestamp() }), "Rejected"), "ghost"),

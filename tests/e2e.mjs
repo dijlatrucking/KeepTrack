@@ -7,6 +7,7 @@ import { doc, setDoc, writeBatch, collection } from "firebase/firestore";
 import { PNG } from "pngjs";
 import { PDFDocument, StandardFonts } from "pdf-lib";
 import { spawn } from "node:child_process";
+import http from "node:http";
 import { cpSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
@@ -32,6 +33,34 @@ __cae(auth, "http://127.0.0.1:9099", { disableWarnings: true });
 __cfe(db, "127.0.0.1", 8080);
 `);
 const server = spawn("python3", ["-m", "http.server", String(PORT), "--directory", SITE], { stdio: "ignore" });
+
+// A stand-in for the Google Drive Apps Script: it does exactly what the real script does to decide
+// access (checks the Firebase token, then reads the document, its scan and the carrier AS THAT USER),
+// and records where the file would be filed.
+const driveCalls = [];
+const DRIVE_PORT = 5066;
+const fsGet = async (path, token) => {
+  const r = await fetch(`http://127.0.0.1:8080/v1/projects/${PROJECT}/databases/(default)/documents/${path}`, { headers: { Authorization: "Bearer " + token } });
+  if (!r.ok) return null;
+  const j = await r.json();
+  return Object.fromEntries(Object.entries(j.fields || {}).map(([k, v]) => [k, Object.values(v)[0]]));
+};
+const driveServer = http.createServer(async (req, res) => {
+  const send = (o) => { res.writeHead(200, { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }); res.end(JSON.stringify(o)); };
+  if (req.method !== "POST") return send({ ok: true });
+  let body = ""; for await (const c of req) body += c;
+  const b = JSON.parse(body || "{}");
+  if (b.ping) return send({ ok: true, ping: "pong" });
+  const who = await (await fetch(`http://127.0.0.1:9099/identitytoolkit.googleapis.com/v1/accounts:lookup?key=fake`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ idToken: b.idToken }) })).json();
+  if (!who.users) { driveCalls.push({ docId: b.docId, ok: false, why: "token" }); return send({ ok: false, error: "not signed in" }); }
+  const meta = await fsGet("documents/" + b.docId, b.idToken);
+  const file = meta && (await fsGet("docFiles/" + b.docId, b.idToken));
+  const carrier = meta && (await fsGet("carriers/" + meta.carrierId, b.idToken));
+  const ok = !!(meta && file && file.data && carrier);
+  driveCalls.push({ docId: b.docId, ok, role: meta && meta.uploaderRole, kind: meta && meta.kind, carrier: carrier && carrier.name, driver: meta && meta.uploaderName });
+  send(ok ? { ok: true, folder: `${carrier.name} / ${meta.uploaderRole === "driver" ? "Drivers / " + meta.uploaderName : "Loads"}` } : { ok: false, error: "no access" });
+});
+await new Promise((r) => driveServer.listen(DRIVE_PORT, "127.0.0.1", r));
 await new Promise((r) => setTimeout(r, 1200));
 
 const env = await initializeTestEnvironment({
@@ -261,6 +290,10 @@ await run("Carrier sets the driver's pay to $0.60/mile on Unit 7", async () => {
   await row.getByText("$0.6 per mile").waitFor();
 });
 
+await run("Owner's Google Drive is connected (test stand-in for the Apps Script)", async () => {
+  await seed((db) => setDoc(doc(db, "settings", "app"), { driveUrl: `http://127.0.0.1:${DRIVE_PORT}/exec` }));
+});
+
 // ---------- 5. Dispatcher books a load by scanning the rate con ----------
 await run("Dispatcher scans a rate con PDF and the load fills itself in", async () => {
   await nav(dispatcher, "Loads");
@@ -314,11 +347,38 @@ await run("Driver snaps a BOL: a 7.7-megapixel photo gets shrunk and uploaded", 
   timings.push(["Shrink + upload a 7.7 MP worst-case photo", Date.now() - t0]);
 });
 
+await run("The driver's BOL is copied to Google Drive under their own folder", async () => {
+  await toast(driver, "Copied 1 file to Google Drive");
+  const call = driveCalls.find((c) => c.role === "driver" && c.kind === "BOL");
+  if (!call || !call.ok) throw new Error("Drive copy for the driver's BOL failed: " + JSON.stringify(driveCalls));
+  if (call.carrier !== "Test Carrier A" || call.driver !== "Drew Driver") throw new Error("Wrong folder info: " + JSON.stringify(call));
+});
+
+await run("Driver sends a $85 lumper receipt from the road", async () => {
+  const R = driver.locator(".card", { hasText: "Lumpers, repairs, tolls" });
+  await R.getByLabel("Type").selectOption("Lumper");
+  await R.getByLabel("Amount ($)").fill("85");
+  await R.getByLabel("Note").fill("Lumper at Walmart DC");
+  await R.locator('input[data-role="camera"]').setInputFiles({ name: "lumper.png", mimeType: "image/png", buffer: noisyPng(800, 1100) });
+  await R.locator(".scan-item").first().waitFor();
+  await R.getByRole("button", { name: "Send receipt" }).click();
+  await toast(driver, "Receipt sent to dispatch");
+  await driver.waitForFunction(() => true);
+  const t0 = Date.now();
+  while (!driveCalls.some((c) => c.kind === "Lumper" && c.ok) && Date.now() - t0 < 10000) await new Promise((r) => setTimeout(r, 200));
+  if (!driveCalls.some((c) => c.kind === "Lumper" && c.ok)) throw new Error("Lumper receipt didn't reach Drive");
+});
+
 await run("Carrier can NOT see the BOL yet (it hasn't been reviewed)", async () => {
   await nav(carrier, "Documents");
   await carrier.getByRole("heading", { name: "Document vault" }).waitFor();
   await carrier.waitForTimeout(1500);
   if (await carrier.getByText(/BOL · #/).count()) throw new Error("Unreviewed BOL visible to carrier");
+});
+
+await run("Dispatcher sees the lumper receipt with its amount in the review queue", async () => {
+  await nav(dispatcher, "Tasks");
+  await dispatcher.locator(".row", { hasText: "Lumper receipt" }).filter({ hasText: "$85.00" }).first().waitFor();
 });
 
 await run("Dispatcher sees the BOL in the review queue, opens the scan, and approves it", async () => {
@@ -697,6 +757,8 @@ for (const [who, p] of Object.entries(pages)) await p.screenshot({ path: `${OUT}
 // ---------- Report ----------
 await browser.close();
 server.kill();
+driveServer.close();
+console.log(`Drive copies: ${driveCalls.filter((c) => c.ok).length} ok, ${driveCalls.filter((c) => !c.ok).length} refused`);
 await env.cleanup();
 
 const failed = results.filter((r) => !r.ok);

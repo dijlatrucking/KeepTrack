@@ -253,3 +253,4 @@ details.stub summary { display: flex; justify-content: space-between; gap: 12px;
   .steps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .bar { grid-template-columns: 90px 1fr auto; }
 }
+.steps-list { margin: 0; padding-left: 20px; line-height: 1.7; }

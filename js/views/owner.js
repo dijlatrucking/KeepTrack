@@ -1,8 +1,9 @@
-import { db, collection, doc, addDoc, setDoc, updateDoc, deleteDoc, query, where, serverTimestamp, writeBatch } from "../fb.js";
+import { db, collection, doc, addDoc, setDoc, updateDoc, deleteDoc, getDocs, query, where, serverTimestamp, writeBatch } from "../fb.js";
 import { h, card, table, stat, money, num, field, input, select, btn, formToObj, guard, inviteCode, pill, ago, toast } from "../ui.js";
 import { watch, byNewest } from "../data.js";
 import { loadsTable, docsReviewQueue, requestsList, showInvite, staffScanCard, openDoc } from "../components.js";
 import { pickerPage, summaryView, loadsView, expensesView, taxView, carrierSettingsCard } from "../ops.js";
+import { driveUrl, forgetDriveUrl, pingDrive, sendToDrive } from "../drive.js";
 
 const allIds = (ctx) => ctx.carriers.map((c) => c.id);
 
@@ -182,7 +183,8 @@ function docsView(ctx, root) {
       { label: "Carrier", cell: (d) => ctx.carrierName(d.carrierId) },
       { label: "From", cell: (d) => d.uploaderName || "—" },
       { label: "Status", cell: (d) => pill(d.status) },
-      { label: "", cell: (d) => btn("View", () => openDoc(d)) },
+      { label: "", cell: (d) => h("div", { class: "row-meta" }, btn("View", () => openDoc(d)),
+        btn("To Drive", async () => { const j = await sendToDrive(d.id, { quiet: true }); toast(j ? `Copied to Drive: ${j.folder}` : "Couldn't reach Google Drive. Check Settings.", j ? "ok" : "bad"); }, "ghost")) },
     ], shown, term ? "No matches." : "No documents yet."));
   };
   const search = input("q", { type: "search", placeholder: "Search name, carrier, load, type…", "aria-label": "Search all documents" });
@@ -251,6 +253,61 @@ function accountsView(ctx, root) {
   root.append(stats, editSlot, card("Accounts", null, h("div", { class: "form-grid" }, field("Search", search), field("Role", roleSel), field("Carrier", carrierSel)), body));
 }
 
+
+// Google Drive: every scan is also copied into the owner's Drive through an Apps Script.
+function settingsView(ctx, root) {
+  const status = h("p", { class: "muted" }, "Checking…");
+  const urlIn = input("driveUrl", { type: "url", placeholder: "https://script.google.com/macros/s/…/exec", "aria-label": "Apps Script web app URL" });
+  const msg = h("p", { class: "scanmsg", role: "status" });
+  const show = async () => {
+    forgetDriveUrl();
+    const u = await driveUrl();
+    urlIn.value = u;
+    status.textContent = u ? "Connected. New scans are copied to Google Drive automatically." : "Not connected yet. Scans are saved in KeepTrack only.";
+  };
+  show();
+  const copyScript = btn("Copy the script", async () => {
+    try {
+      const code = await (await fetch("drive/KeepTrackDrive.gs?v=" + Date.now())).text();
+      await navigator.clipboard.writeText(code);
+      toast("Script copied", "ok");
+    } catch (e) { window.open("drive/KeepTrackDrive.gs", "_blank"); }
+  }, "dark");
+  const form = h("form", { class: "stack", onSubmit: async (e) => {
+    e.preventDefault();
+    const u = urlIn.value.trim();
+    if (u && !/^https:\/\/script\.google\.com\/macros\/s\/[^/]+\/exec$/.test(u)) { msg.textContent = "That doesn't look like an Apps Script web app URL (it ends in /exec)."; msg.className = "scanmsg bad"; return; }
+    if (u) {
+      msg.textContent = "Testing the connection…"; msg.className = "scanmsg";
+      try { const j = await pingDrive(u); msg.textContent = "It works. Files will go to your KeepTrack folder in Google Drive."; msg.className = "scanmsg ok"; if (j.root) msg.append(" ", h("a", { href: j.root, target: "_blank", rel: "noopener" }, "Open folder")); }
+      catch (err) { msg.textContent = "Couldn't reach the script: " + err.message + ". Check it's deployed as a Web app with access for Anyone."; msg.className = "scanmsg bad"; return; }
+    }
+    await guard(() => setDoc(doc(db, "settings", "app"), { driveUrl: u, updatedAt: serverTimestamp() }, { merge: true }), u ? "Google Drive connected" : "Google Drive disconnected");
+    show();
+  } },
+    field("Web app URL", urlIn),
+    h("div", { class: "row-inline" }, btn("Save and test", null, "primary", { type: "submit" })),
+    msg);
+  const backfill = btn("Copy existing documents to Drive", async () => {
+    if (!(await driveUrl())) return toast("Connect Google Drive first.", "bad");
+    const snap = await getDocs(collection(db, "documents"));
+    if (!confirm(`Copy ${snap.size} document${snap.size === 1 ? "" : "s"} to Google Drive? Files already there are skipped.`)) return;
+    let ok = 0, bad = 0;
+    for (const d of snap.docs) { (await sendToDrive(d.id, { quiet: true })) ? ok++ : bad++; backfill.textContent = `Copying… ${ok + bad}/${snap.size}`; }
+    backfill.textContent = "Copy existing documents to Drive";
+    toast(`Copied ${ok} to Google Drive${bad ? `, ${bad} failed` : ""}`, bad ? "bad" : "ok");
+  }, "ghost");
+  root.append(card("Google Drive", null, status,
+    h("ol", { class: "steps-list" },
+      h("li", null, "Tap ", h("b", null, "Copy the script"), " below."),
+      h("li", null, "Open ", h("a", { href: "https://script.google.com/home/projects/create", target: "_blank", rel: "noopener" }, "script.google.com → New project"), ", delete what's there and paste."),
+      h("li", null, "Tap ", h("b", null, "Deploy → New deployment"), ", pick type ", h("b", null, "Web app"), ". Execute as: ", h("b", null, "Me"), ". Who has access: ", h("b", null, "Anyone"), ". Deploy, then allow access when Google asks."),
+      h("li", null, "Copy the ", h("b", null, "Web app URL"), " and paste it here, then tap ", h("b", null, "Save and test"), ".")),
+    copyScript, form,
+    h("p", { class: "muted small" }, "Folders: KeepTrack / Carrier / Drivers / Driver name / (Load folders, Receipts) · Carrier / Loads / Load · Carrier / Company / Insurance, W-9… · Carrier / Receipts."),
+    h("div", null, backfill)));
+}
+
 export default [
   { id: "overview", label: "Overview", render: overview },
   { id: "summary", label: "Summary", render: (ctx, root) => pickerPage(ctx, root, "summary", summaryView) },
@@ -263,4 +320,5 @@ export default [
   { id: "accounts", label: "Accounts", render: accountsView },
   { id: "team", label: "Team", render: teamView },
   { id: "access", label: "Access requests", render: (ctx, root) => root.append(accessRequests(ctx)) },
+  { id: "settings", label: "Settings", render: settingsView },
 ];

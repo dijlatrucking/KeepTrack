@@ -299,6 +299,11 @@ await allow("owner marks a fee paid", () => updateDoc(doc(o, "loadMoney/L1"), { 
 await allow("owner lists every carrier's expenses", () => getDocs(collection(o, "expenses")));
 await allow("owner lists every recurring charge", () => getDocs(collection(o, "recurring")));
 await allow("owner edits any carrier's settings", () => updateDoc(doc(o, "carriers/B"), { factorName: "RTS", factorPct: 2.5, feePercent: 7 }));
+await allow("owner connects Google Drive", () => setDoc(doc(o, "settings/app"), { driveUrl: "https://script.google.com/macros/s/x/exec" }));
+await allow("driver reads app settings (to know where Drive is)", () => getDoc(doc(d, "settings/app")));
+await deny("carrier admin changes the Drive connection", () => setDoc(doc(a, "settings/app"), { driveUrl: "https://evil.example/exec" }));
+await deny("dispatcher changes the Drive connection", () => setDoc(doc(s, "settings/app"), { driveUrl: "https://evil.example/exec" }));
+await deny("signed-out visitor reads app settings", () => getDoc(doc(anon(), "settings/app")));
 await allow("owner reads any scan", () => getDoc(doc(o, "docFiles/D3")));
 
 // ---------- Report ----------
