@@ -99,8 +99,9 @@ export async function uploadDoc(ctx, file, meta) {
   const data = await toScan(file);
   const docRef = doc(collection(db, "documents"));
   const batch = writeBatch(db);
+  const clean = Object.fromEntries(Object.entries(meta).filter(([, v]) => v !== undefined));
   batch.set(docRef, {
-    ...meta,
+    ...clean,
     name: meta.name || file.name,
     fileType: data.startsWith("data:application/pdf") ? "pdf" : "image",
     uploadedBy: ctx.uid,
@@ -111,6 +112,107 @@ export async function uploadDoc(ctx, file, meta) {
   batch.set(doc(db, "docFiles", docRef.id), { carrierId: meta.carrierId, uploadedBy: ctx.uid, data });
   await batch.commit();
   return docRef;
+}
+
+export const DOC_KINDS = ["Rate con", "BOL", "POD", "Receipt", "Lumper", "Insurance", "Authority", "W-9", "Registration", "CDL / med card", "Other"];
+
+// Scanner: "Scan with camera" opens the phone camera; "Choose file" picks a photo or PDF.
+// Several pages can be added before saving; each is shown as a thumbnail.
+export function scanPicker(label = "Scan or upload") {
+  let picked = [];
+  const list = h("div", { class: "scan-list" });
+  const id = "scan-" + Math.random().toString(36).slice(2, 8);
+  const draw = () => {
+    list.replaceChildren(...picked.map((f, i) => {
+      const thumb = f.type.startsWith("image/")
+        ? h("img", { src: URL.createObjectURL(f), alt: `Page ${i + 1}`, class: "scan-thumb" })
+        : h("div", { class: "scan-thumb scan-pdf" }, "PDF");
+      return h("div", { class: "scan-item" }, thumb,
+        h("span", { class: "small" }, `Page ${i + 1}`),
+        h("button", { type: "button", class: "scan-remove", "aria-label": `Remove page ${i + 1}`, onClick: () => { picked.splice(i, 1); draw(); } }, "×"));
+    }));
+  };
+  const onPick = (e) => { picked.push(...e.target.files); e.target.value = ""; draw(); };
+  const camera = h("input", { type: "file", accept: "image/*", capture: "environment", id: id + "-cam", class: "visually-hidden", "data-role": "camera", onChange: onPick });
+  const chooser = h("input", { type: "file", accept: "image/*,application/pdf", multiple: true, id: id + "-file", class: "visually-hidden", "data-role": "choose", onChange: onPick });
+  const el = h("div", { class: "scanner" },
+    h("div", { class: "field-label" }, label),
+    h("div", { class: "scan-actions" },
+      h("label", { for: id + "-cam", class: "btn btn-dark" }, "Scan with camera"),
+      h("label", { for: id + "-file", class: "btn btn-ghost" }, "Choose file")),
+    camera, chooser, list);
+  return { el, files: () => picked.slice(), clear: () => { picked = []; draw(); } };
+}
+
+// Save each picked page as its own document. Multi-page scans get "p1/2" style names.
+export async function saveScans(ctx, files, meta) {
+  for (let i = 0; i < files.length; i++) {
+    const name = (meta.name || `${meta.kind || "Doc"}${meta.loadLabel ? " · " + meta.loadLabel.split(" ")[0] : ""}`) + (files.length > 1 ? ` p${i + 1}/${files.length}` : "");
+    await uploadDoc(ctx, files[i], { ...meta, name });
+  }
+}
+
+// Pop-up scanner for one load (from the load board's "Scan" button).
+export function openScanDialog(ctx, load) {
+  const scans = scanPicker("Pages");
+  const kindSel = select("kind", DOC_KINDS.slice(0, 5));
+  const dlg = h("dialog", { class: "dialog", "aria-label": "Add paperwork" });
+  const close = () => { dlg.close(); dlg.remove(); };
+  const form = h("form", { class: "stack", onSubmit: async (e) => {
+    e.preventDefault();
+    if (!scans.files().length) return toast("Scan or choose at least one page.", "bad");
+    const ok = await guard(() => saveScans(ctx, scans.files(), {
+      carrierId: load.carrierId, loadId: load.id, loadLabel: `${shortId(load.id)} ${lane(load)}`, kind: kindSel.value, status: "approved",
+    }), "Paperwork saved");
+    if (ok !== null) close();
+  } },
+    h("h2", null, "Add paperwork"),
+    h("p", { class: "muted small" }, `${shortId(load.id)} · ${lane(load)} · ${ctx.carrierName(load.carrierId)}`),
+    field("Type", kindSel),
+    scans.el,
+    h("div", { class: "row-inline" }, btn("Save", null, "primary", { type: "submit" }), btn("Cancel", close, "ghost")));
+  dlg.append(form);
+  dlg.addEventListener("cancel", (e) => { e.preventDefault(); close(); });
+  document.body.append(dlg);
+  dlg.showModal();
+}
+
+// Owner/dispatcher: scan paperwork for any carrier they work, optionally tied to a load.
+export function staffScanCard(ctx) {
+  if (!ctx.carriers.length) return card("Scan a document", null, h("p", { class: "empty" }, "No carriers assigned to you yet."));
+  const carrierSel = select("carrierId", ctx.carriers.map((c) => ({ value: c.id, label: c.name })));
+  const loadSel = select("loadId", [{ value: "", label: "Not tied to a load" }]);
+  let loads = [];
+  const fillLoads = async () => {
+    const snap = await getDocs(query(collection(db, "loads"), where("carrierId", "==", carrierSel.value))).catch(() => null);
+    loads = snap ? snap.docs.map((d) => ({ id: d.id, ...d.data() })).sort(byNewest).slice(0, 50) : [];
+    loadSel.replaceChildren(h("option", { value: "" }, "Not tied to a load"), ...loads.map((l) => h("option", { value: l.id }, `${shortId(l.id)} ${lane(l)}`)));
+  };
+  carrierSel.addEventListener("change", fillLoads);
+  fillLoads();
+  const scans = scanPicker("Pages");
+  const form = h("form", { class: "stack", onSubmit: async (e) => {
+    e.preventDefault();
+    const f = formToObj(form);
+    if (!scans.files().length) return toast("Scan or choose at least one page.", "bad");
+    const l = loads.find((x) => x.id === f.loadId);
+    const ok = await guard(() => saveScans(ctx, scans.files(), {
+      carrierId: f.carrierId, kind: f.kind, category: f.kind, status: "approved",
+      name: f.name.trim() || undefined, tags: f.tags.trim(),
+      loadId: l ? l.id : null, loadLabel: l ? `${shortId(l.id)} ${lane(l)}` : null,
+    }), "Saved");
+    if (ok !== null) { form.reset(); scans.clear(); fillLoads(); }
+  } },
+    h("div", { class: "form-grid" },
+      field("Carrier", carrierSel),
+      field("Load", loadSel),
+      field("Type", select("kind", DOC_KINDS)),
+      field("Name (optional)", input("name", { placeholder: "e.g. Rate con – Boise to Denver" })),
+      field("Search tags", input("tags", { placeholder: "Broker, PO #, reference…" }))),
+    scans.el,
+    h("div", null, btn("Save document", null, "primary", { type: "submit" })),
+    h("p", { class: "muted small" }, "Saved documents are visible to that carrier right away."));
+  return card("Scan a document", null, form);
 }
 
 // Pending BOLs/receipts for staff to approve. Approved docs become visible to the carrier admin.
@@ -217,6 +319,7 @@ export function loadsTable(ctx, carrierIds, opts = {}) {
       }, align: "right" });
     }
     if (opts.showDispatcher) cols.push({ label: "Dispatcher", cell: (l) => l.dispatcherName || "—" });
+    if (opts.editable) cols.push({ label: "Paperwork", cell: (l) => h("button", { type: "button", class: "btn btn-ghost btn-sm", "aria-label": "Scan paperwork for load " + shortId(l.id), onClick: () => openScanDialog(ctx, l) }, "Scan") });
     cols.push({ label: "Status", cell: (l) => opts.editable
       ? h("select", { class: "input input-sm", "aria-label": "Status for load " + shortId(l.id), onChange: (e) => guard(() => updateDoc(doc(db, "loads", l.id), { status: e.target.value, updatedAt: serverTimestamp() })) },
           LOAD_STATUSES.map((s) => h("option", { value: s.value, selected: s.value === l.status }, s.label)))
@@ -247,6 +350,7 @@ export function loadForm(ctx) {
   const rateIn = input("rate", { type: "number", step: "0.01", min: "0", inputmode: "decimal", required: true });
   const feeIn = input("fee", { type: "number", step: "0.01", min: "0", inputmode: "decimal" });
   let drivers = [], trucks = [];
+  const scans = scanPicker("Rate con / paperwork (optional)");
 
   const loadPeople = async () => {
     const cid = carrierSel.value;
@@ -289,9 +393,11 @@ export function loadForm(ctx) {
         status: "booked", createdAt: serverTimestamp(),
       });
       await setDoc(doc(db, "loadMoney", loadRef.id), { carrierId: f.carrierId, rate: num(f.rate), fee: num(f.fee), feePaid: false });
+      const label = `${shortId(loadRef.id)} ${f.origin.trim()} → ${f.destination.trim()}`;
+      await saveScans(ctx, scans.files(), { carrierId: f.carrierId, loadId: loadRef.id, loadLabel: label, kind: f.docKind, status: "approved" });
       return true;
-    }, "Load booked");
-    if (ok) { form.reset(); delete feeIn.dataset.touched; loadPeople(); }
+    }, scans.files().length ? "Load booked with paperwork" : "Load booked");
+    if (ok) { form.reset(); scans.clear(); delete feeIn.dataset.touched; loadPeople(); }
   } },
     field("Carrier", carrierSel),
     field("Driver", driverSel),
@@ -304,6 +410,9 @@ export function loadForm(ctx) {
     field("Load rate ($)", rateIn),
     field("Dispatch fee ($)", feeIn, "Auto-fills from the carrier's fee %"),
     field("Notes", input("notes", { placeholder: "Reefer temp, appointment #, etc." })),
+    h("div", { class: "scan-block" },
+      h("div", { class: "form-grid" }, field("Paperwork type", select("docKind", DOC_KINDS.slice(0, 5)))),
+      scans.el),
     h("div", { class: "form-actions" }, btn("Book load", null, "primary", { type: "submit" })));
 
   let open = false;

@@ -1,7 +1,7 @@
 import { db, collection, doc, addDoc, setDoc, updateDoc, deleteDoc, query, where, serverTimestamp } from "../fb.js";
-import { h, card, table, stat, money, num, field, input, select, btn, formToObj, guard, inviteCode, pill, fmtDate, ago, toDate } from "../ui.js";
+import { h, card, table, stat, money, num, field, input, select, btn, formToObj, guard, inviteCode, pill, fmtDate, ago, toDate, toast } from "../ui.js";
 import { watch, byNewest, driverPayFor } from "../data.js";
-import { lane, shortId, uploadDoc, openDoc } from "../components.js";
+import { lane, shortId, openDoc, scanPicker, saveScans } from "../components.js";
 
 const cid = (ctx) => ctx.profile.carrierId;
 const q = (ctx, coll, ...w) => query(collection(db, coll), where("carrierId", "==", cid(ctx)), ...w);
@@ -134,14 +134,14 @@ function people(ctx, root) {
 
 function documents(ctx, root) {
   let docs = [], term = "", cat = "All";
-  const CATS = ["All", "Insurance", "Authority", "W-9", "Registrations", "CDLs & med cards", "BOLs", "Receipts", "Other"];
+  const CATS = ["All", "Insurance", "Authority", "W-9", "Registrations", "CDLs & med cards", "Rate cons", "BOLs", "Receipts", "Other"];
   const listBody = h("div");
   const chips = h("div", { class: "chips" });
   const draw = () => {
     chips.replaceChildren(...CATS.map((c) => h("button", { type: "button", class: "chip" + (cat === c ? " on" : ""), "aria-pressed": String(cat === c), onClick: () => { cat = c; draw(); } }, c)));
     const t = term.toLowerCase();
     const shown = docs.filter((d) => {
-      const category = d.category || (d.kind === "BOL" ? "BOLs" : d.kind === "Receipt" ? "Receipts" : "Other");
+      const category = d.status === "filed" && d.category ? d.category : ({ BOL: "BOLs", POD: "BOLs", Receipt: "Receipts", Lumper: "Receipts", "Rate con": "Rate cons", Insurance: "Insurance", Authority: "Authority", "W-9": "W-9", Registration: "Registrations", "CDL / med card": "CDLs & med cards" }[d.kind] || "Other");
       if (cat !== "All" && category !== cat) return false;
       if (!t) return true;
       return [d.name, d.category, d.kind, d.tags, d.uploaderName, d.loadLabel].filter(Boolean).join(" ").toLowerCase().includes(t);
@@ -161,21 +161,23 @@ function documents(ctx, root) {
   ctx.sub(watch(q(ctx, "documents", where("status", "==", "filed")), merge(0)));
   ctx.sub(watch(q(ctx, "documents", where("status", "==", "approved")), merge(1)));
 
-  const fileIn = input("file", { type: "file", accept: "image/*,application/pdf", required: true });
-  const form = h("form", { class: "form-grid", onSubmit: async (e) => {
+  const scans = scanPicker("Pages (scan with your camera or choose a PDF/photo)");
+  const form = h("form", { class: "stack", onSubmit: async (e) => {
     e.preventDefault();
     const f = formToObj(form);
-    const ok = await guard(() => uploadDoc(ctx, fileIn.files[0], {
-      carrierId: cid(ctx), status: "filed", category: f.category, name: f.name.trim(), tags: f.tags.trim(), expiresAt: f.expiresAt || null,
+    if (!scans.files().length) return toast("Scan or choose at least one page.", "bad");
+    const ok = await guard(() => saveScans(ctx, scans.files(), {
+      carrierId: cid(ctx), status: "filed", category: f.category, kind: f.category, name: f.name.trim() || undefined, tags: f.tags.trim(), expiresAt: f.expiresAt || null,
     }), "Uploaded");
-    if (ok) form.reset();
+    if (ok !== null) { form.reset(); scans.clear(); }
   } },
-    field("File (PDF or photo)", fileIn),
-    field("Name", input("name", { placeholder: "e.g. Certificate of insurance 2026" })),
-    field("Category", select("category", CATS.slice(1))),
-    field("Search tags", input("tags", { placeholder: "Unit 3, driver name, policy #…" })),
-    field("Expires", input("expiresAt", { type: "date" }), "We'll flag it 30 days out"),
-    h("div", { class: "form-actions" }, btn("Upload", null, "primary", { type: "submit" })));
+    h("div", { class: "form-grid" },
+      field("Name", input("name", { placeholder: "e.g. Certificate of insurance 2026" })),
+      field("Category", select("category", CATS.slice(1))),
+      field("Search tags", input("tags", { placeholder: "Unit 3, driver name, policy #…" })),
+      field("Expires", input("expiresAt", { type: "date" }), "We'll flag it 30 days out")),
+    scans.el,
+    h("div", null, btn("Upload", null, "primary", { type: "submit" })));
 
   const search = input("q", { type: "search", placeholder: "Search: insurance, Unit 3, CDL, load…", "aria-label": "Search documents" });
   search.addEventListener("input", () => { term = search.value; draw(); });

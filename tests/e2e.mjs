@@ -256,8 +256,11 @@ await run("Dispatcher books a 500-mile, $2,000 load and the 8% fee fills in", as
   await dispatcher.getByLabel("Load rate ($)").fill("2000");
   const fee = await dispatcher.getByLabel("Dispatch fee ($)").inputValue();
   if (fee !== "160.00") throw new Error("Fee auto-fill was " + fee);
+  await dispatcher.getByLabel("Paperwork type").selectOption("Rate con");
+  await dispatcher.locator('input[data-role="camera"]').first().setInputFiles({ name: "ratecon.png", mimeType: "image/png", buffer: noisyPng(1200, 1600) });
+  await dispatcher.locator(".scan-item").first().waitFor();
   await dispatcher.getByRole("button", { name: "Book load", exact: true }).click();
-  await toast(dispatcher, "Load booked");
+  await toast(dispatcher, "Load booked with paperwork");
   await dispatcher.locator("td", { hasText: "Boise, ID → Denver, CO" }).first().waitFor();
 });
 
@@ -308,8 +311,42 @@ await run("Approved BOL shows up in the carrier's vault and search finds it", as
   await search.fill("");
 });
 
+await run("Rate con scanned while booking shows up for the carrier (pre-approved)", async () => {
+  await carrier.locator(".row", { hasText: "Rate con" }).first().waitFor();
+});
+
+await run("Dispatcher scans a lumper receipt onto the load from the load board", async () => {
+  await nav(dispatcher, "Loads");
+  const row = dispatcher.locator("tr", { hasText: "Boise, ID → Denver, CO" }).first();
+  await row.getByRole("button", { name: /Scan paperwork/ }).click();
+  const dlg = dispatcher.locator("dialog[open]");
+  await dlg.getByLabel("Type").selectOption("Lumper");
+  await dlg.locator('input[data-role="choose"]').setInputFiles([
+    { name: "p1.png", mimeType: "image/png", buffer: noisyPng(900, 1200) },
+    { name: "p2.png", mimeType: "image/png", buffer: noisyPng(900, 1200) }]);
+  await dlg.locator(".scan-item").nth(1).waitFor();
+  await dlg.getByRole("button", { name: "Save" }).click();
+  await toast(dispatcher, "Paperwork saved");
+  await carrier.locator(".row", { hasText: "p2/2" }).first().waitFor();
+});
+
+await run("Owner scans a W-9 from the Documents tab and can open it", async () => {
+  await nav(owner, "Documents");
+  await owner.getByLabel("Type").selectOption("W-9");
+  await owner.getByLabel("Name (optional)").fill("W-9 Test Carrier A");
+  await owner.locator('input[data-role="camera"]').first().setInputFiles({ name: "w9.png", mimeType: "image/png", buffer: noisyPng(1000, 1300) });
+  await owner.getByRole("button", { name: "Save document" }).click();
+  await toast(owner, "Saved");
+  const row = owner.locator("tr", { hasText: "W-9 Test Carrier A" }).first();
+  const [popup] = await Promise.all([owner.waitForEvent("popup"), row.getByRole("button", { name: "View" }).click()]);
+  await popup.waitForURL(/^blob:/, { timeout: 10000 });
+  await popup.close();
+  await carrier.locator(".row", { hasText: "W-9 Test Carrier A" }).first().waitFor();
+});
+
 await run("Carrier uploads an insurance PDF that expires in 10 days and it gets flagged", async () => {
-  await carrier.getByLabel("File (PDF or photo)").setInputFiles({ name: "coi.pdf", mimeType: "application/pdf", buffer: tinyPdf });
+  await carrier.locator('input[data-role="choose"]').first().setInputFiles({ name: "coi.pdf", mimeType: "application/pdf", buffer: tinyPdf });
+  await carrier.locator(".scan-item").first().waitFor();
   await carrier.getByLabel("Name").fill("Insurance 2026");
   await carrier.getByLabel("Category").selectOption("Insurance");
   await carrier.getByLabel("Expires").fill(iso(10));

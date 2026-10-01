@@ -1,7 +1,7 @@
 import { db, collection, doc, addDoc, setDoc, updateDoc, deleteDoc, query, where, serverTimestamp, writeBatch } from "../fb.js";
 import { h, card, table, stat, money, num, field, input, select, btn, formToObj, guard, inviteCode, pill, ago } from "../ui.js";
 import { watch, byNewest } from "../data.js";
-import { loadsTable, loadForm, docsReviewQueue, requestsList, showInvite } from "../components.js";
+import { loadsTable, loadForm, docsReviewQueue, requestsList, showInvite, staffScanCard, openDoc } from "../components.js";
 
 const allIds = (ctx) => ctx.carriers.map((c) => c.id);
 
@@ -171,17 +171,23 @@ function teamView(ctx, root) {
 
 function docsView(ctx, root) {
   const all = h("div");
-  ctx.sub(watch(collection(db, "documents"), (docs) => {
-    docs.sort(byNewest);
+  let docs = [], term = "";
+  const draw = () => {
+    const shown = docs.filter((d) => !term || [d.name, d.kind, d.category, d.tags, d.loadLabel, d.uploaderName, ctx.carrierName(d.carrierId)].filter(Boolean).join(" ").toLowerCase().includes(term))
+      .sort(byNewest).slice(0, 100);
     all.replaceChildren(table([
       { label: "Document", cell: (d) => h("span", { class: "strong" }, d.name) },
       { label: "Type", cell: (d) => d.kind || d.category || "—" },
       { label: "Carrier", cell: (d) => ctx.carrierName(d.carrierId) },
       { label: "From", cell: (d) => d.uploaderName || "—" },
       { label: "Status", cell: (d) => pill(d.status) },
-    ], docs.slice(0, 100), "No documents yet."));
-  }));
-  root.append(docsReviewQueue(ctx, allIds(ctx)), card("All documents", null, all));
+      { label: "", cell: (d) => btn("View", () => openDoc(d)) },
+    ], shown, term ? "No matches." : "No documents yet."));
+  };
+  const search = input("q", { type: "search", placeholder: "Search name, carrier, load, type…", "aria-label": "Search all documents" });
+  search.addEventListener("input", () => { term = search.value.trim().toLowerCase(); draw(); });
+  ctx.sub(watch(collection(db, "documents"), (d) => { docs = d; draw(); }));
+  root.append(staffScanCard(ctx), docsReviewQueue(ctx, allIds(ctx)), card("All documents", null, search, all));
 }
 
 export default [

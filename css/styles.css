@@ -182,3 +182,20 @@ details.stub summary { display: flex; justify-content: space-between; gap: 12px;
 
 /* Long lists */
 .more { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 12px; border-top: 1px solid var(--line-soft); }
+
+/* Scanner */
+.scanner { display: flex; flex-direction: column; gap: 10px; padding: 14px; border: 1px dashed var(--field); border-radius: 12px; background: var(--ground); }
+.scan-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.scan-actions .btn { min-height: 44px; cursor: pointer; }
+.scan-list { display: flex; flex-wrap: wrap; gap: 10px; }
+.scan-list:empty { display: none; }
+.scan-item { position: relative; display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.scan-thumb { width: 72px; height: 96px; object-fit: cover; border-radius: 6px; border: 1px solid var(--line); background: var(--surface); }
+.scan-pdf { display: grid; place-items: center; font-family: var(--mono); font-size: 13px; color: var(--muted); }
+.scan-remove { position: absolute; top: -8px; right: -8px; width: 26px; height: 26px; border-radius: 50%; border: 1px solid var(--line); background: var(--surface); color: var(--ink); font-size: 16px; line-height: 1; cursor: pointer; }
+.scan-block { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 12px; }
+.btn-sm { min-height: 34px; padding: 0 12px; font-size: 13px; }
+
+/* Dialog */
+.dialog { border: 1px solid var(--line); border-radius: 14px; padding: 22px; width: min(520px, calc(100vw - 32px)); background: var(--surface); color: var(--ink); }
+.dialog::backdrop { background: rgba(21, 23, 28, 0.45); }
