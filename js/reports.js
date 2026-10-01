@@ -108,3 +108,25 @@ export async function taxPdf({ title, sub, quarters, qRows, cats, note }) {
     open(doc, "tax-summary.pdf");
   } catch (e) { toast(e.message, "bad"); }
 }
+
+// The index that goes into Google Drive with each backup: every scan copied, its details and a link
+// to the file in Drive. Returned as base64 (it's saved to Drive, not opened).
+const latin = (v) => String(v ?? "").replace(/→/g, "to").replace(/[^\x00-\xFF]/g, "");
+export async function backupPdf({ title, sub, rows, failed = [] }) {
+  const doc = await newDoc(true);
+  header(doc, latin(title), latin(sub));
+  doc.setFont("helvetica", "normal"); doc.setFontSize(10);
+  doc.text(latin(`${rows.length} scan${rows.length === 1 ? "" : "s"} copied to Google Drive${failed.length ? ` · ${failed.length} didn't make it (listed at the end)` : ""}. Tap "Open" to see a file in Drive.`), 36, 74);
+  const head = ["Sent", "Carrier", "Paper", "Load", "Sent by", "Amount", "Status", "File"];
+  const body = rows.map((r) => [fmtDate(r.date), r.carrier, r.paper, r.load || "—", r.sentBy || "—", r.amount ? money(r.amount) : "", r.status, r.url ? "Open" : ""].map(latin));
+  doc.autoTable({
+    ...TABLE, startY: 86, head: [head], body,
+    columnStyles: { 7: { textColor: [161, 74, 18], fontStyle: "bold" } },
+    didDrawCell: (c) => { if (c.section === "body" && c.column.index === 7 && rows[c.row.index].url) doc.link(c.cell.x, c.cell.y, c.cell.width, c.cell.height, { url: rows[c.row.index].url }); },
+  });
+  if (failed.length) {
+    doc.autoTable({ ...TABLE, startY: doc.lastAutoTable.finalY + 18, head: [["Didn't make it to Drive", "Why"]], body: failed.map((f) => [latin(f.paper), latin(f.why || "unknown")]) });
+  }
+  footer(doc, "Backup report. The scans themselves are in your KeepTrack folder in Google Drive.");
+  return doc.output("datauristring").split("base64,")[1];
+}

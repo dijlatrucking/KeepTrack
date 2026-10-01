@@ -7,22 +7,22 @@
 // → Version: New version → Deploy. The URL stays the same.
 //
 // How it stays safe:
-// - KeepTrack sends only the signed-in user's Firebase ID token and document ids. No file data.
+// - KeepTrack sends only the signed-in user's Firebase ID token and document ids (and, for the owner,
+//   the backup report PDF).
 // - This script checks the token with Firebase, then reads each document and its scan from Firestore
 //   *as that user*, so KeepTrack's security rules decide what they're allowed to send or open.
-// - Backups and "free up space" checks only run for the KeepTrack owner.
+// - Backups, backup reports and "free up space" checks only run for the KeepTrack owner.
 // - Files land in your Drive under KeepTrack/<Carrier>/...; nobody else gets Drive access.
 //
 // Where files go:
 //   KeepTrack / Carrier / Loads / 2026-10 / Oct 01 · 4471823 · Boise ID → Denver CO / 2026-10-01 · BOL · 4471823.jpg
 //   KeepTrack / Carrier / Driver receipts / Driver name / 2026-10-02 · Fuel $412.jpg
 //   KeepTrack / Carrier / Company / Insurance / 2026-10-01 · Insurance · Policy 2026.pdf
-//   KeepTrack / Backups / one sheet per backup
+//   KeepTrack / Backups / one PDF report per backup
 
 const FIREBASE_API_KEY = "AIzaSyAD09pk9OyApPn6f8OCiCFr-PpYT17sEHU";
 const PROJECT_ID = "keeptrack-6426e";
 const ROOT_FOLDER = "KeepTrack";
-const SHEET_HEADERS = ["Sent", "Carrier", "Type", "Name", "Load", "Sent by", "Role", "Amount", "Note", "Status", "Tags", "Drive file", "Folder", "KeepTrack ID"];
 
 function doPost(e) {
   try {
@@ -36,10 +36,12 @@ function doPost(e) {
     if (!who || !who.users || !who.users.length) return reply({ ok: false, error: "not signed in" });
     const uid = who.users[0].localId;
 
-    // 2) Owner-only jobs: back up a batch of scans, or confirm copies exist before KeepTrack deletes its own.
-    if (body.backup || body.verify) {
+    // 2) Owner-only jobs: back up a batch of scans, save the backup report, or confirm copies exist
+    //    before KeepTrack deletes its own.
+    if (body.backup || body.verify || body.savePdf) {
       const me = firestoreGet("users/" + uid, body.idToken);
       if (!me || me.role !== "owner") return reply({ ok: false, error: "only the owner can do that" });
+      if (body.savePdf) return reply(saveReport(String(body.savePdf), String(body.data || "")));
       const ids = (body.docIds || []).slice(0, 25);
       if (body.verify) {
         return reply({ ok: true, results: ids.map(function (id) {
@@ -49,18 +51,7 @@ function doPost(e) {
         }) });
       }
       const carriers = {};
-      const results = [], rows = [];
-      ids.forEach(function (id) {
-        const r = copyOne(id, body.idToken, carriers);
-        results.push(r.out);
-        if (r.row) rows.push(r.row);
-      });
-      const ss = backupSheet(String(body.backup));
-      if (rows.length) {
-        const sh = ss.getSheets()[0];
-        sh.getRange(sh.getLastRow() + 1, 1, rows.length, SHEET_HEADERS.length).setValues(rows);
-      }
-      return reply({ ok: true, sheet: ss.getUrl(), results: results });
+      return reply({ ok: true, results: ids.map(function (id) { return copyOne(id, body.idToken, carriers); }) });
     }
 
     if (!body.docId) return reply({ ok: false, error: "missing document" });
@@ -90,7 +81,7 @@ function doPost(e) {
     }
 
     // 5) Copy one new scan (sent automatically after every upload).
-    return reply(copyOne(body.docId, body.idToken, {}).out);
+    return reply(copyOne(body.docId, body.idToken, {}));
   } catch (err) {
     return reply({ ok: false, error: String(err && err.message || err) });
   }
@@ -104,33 +95,27 @@ function doGet() {
 
 // Saves one scan in its place (once: every copy is marked with its KeepTrack document id, so a retry
 // never makes a second copy, and a copy filed under an older layout is moved, not duplicated).
-// Returns the reply for KeepTrack and a row for the backup sheet.
 function copyOne(docId, idToken, carrierCache) {
   const meta = firestoreGet("documents/" + docId, idToken);
-  if (!meta) return { out: { docId: docId, ok: false, error: "no access to that document" } };
+  if (!meta) return { docId: docId, ok: false, error: "no access to that document" };
   if (!(meta.carrierId in carrierCache)) carrierCache[meta.carrierId] = firestoreGet("carriers/" + meta.carrierId, idToken) || {};
   const carrier = carrierCache[meta.carrierId];
   const place = placeFor(meta, carrier, idToken);
   const file = firestoreGet("docFiles/" + docId, idToken);
   const m = file && file.data ? /^data:([^;]+);base64,(.*)$/.exec(file.data) : null;
-  if (file && file.data && !m) return { out: { docId: docId, ok: false, error: "unreadable scan" } };
+  if (file && file.data && !m) return { docId: docId, ok: false, error: "unreadable scan" };
   const ext = m ? (m[1] === "application/pdf" ? ".pdf" : ".jpg") : null;
   const there = findPath(place.path);
   // Already in Drive? (recorded copy, a copy in its place, an older layout, or anywhere else we marked it)
   let saved = existingCopy(docId, meta) || (ext && there && findInPlace(there, place.base, ext, docId)) || legacyCopy(docId, meta, carrier) || searchCopy(docId);
   // No scan in KeepTrack (space freed) and no copy in Drive: nothing to save.
-  if (!saved && !m) return { out: { docId: docId, ok: false, error: "scan not found" } };
+  if (!saved && !m) return { docId: docId, ok: false, error: "scan not found" };
   const folder = there || makePath(place.path);
   if (saved) saved = relocate(saved, folder, place.base, ext || extOf(saved.getName()), docId);
   else saved = createIn(folder, place.base, ext, docId, Utilities.newBlob(Utilities.base64Decode(m[2]), m[1]));
   const size = m ? file.data.length : 0;
   saved.setDescription([MARK + docId, meta.amount ? "$" + money(meta.amount) : "", meta.note || ""].filter(String).join(" · "));
-  const row = [
-    meta.createdAt ? new Date(meta.createdAt) : "", carrier.name || "", meta.kind || meta.category || "", meta.name || "",
-    place.loadTitle || meta.loadLabel || "", meta.uploaderName || "", meta.uploaderRole || "", meta.amount || "", meta.note || "",
-    meta.status || "", meta.tags || "", '=HYPERLINK("' + saved.getUrl() + '","Open")', place.path.join(" / "), docId,
-  ];
-  return { out: { docId: docId, ok: true, url: saved.getUrl(), fileId: saved.getId(), folder: place.path.join(" / "), size: size }, row: row };
+  return { docId: docId, ok: true, url: saved.getUrl(), fileId: saved.getId(), folder: place.path.join(" / "), load: place.loadTitle || "", size: size };
 }
 
 const MARK = "KeepTrack ";
@@ -303,19 +288,18 @@ function cleanupEmpty(folder) {
   }
 }
 
-// One sheet per backup run, in KeepTrack / Backups.
-function backupSheet(name) {
+// The owner's backup report (a PDF KeepTrack builds), saved in KeepTrack / Backups.
+function saveReport(name, data) {
+  if (!data || data.length > 20000000) return { ok: false, error: "report missing or too big" };
+  const bytes = Utilities.base64Decode(data);
+  if (!(bytes[0] === 37 && bytes[1] === 80 && bytes[2] === 68 && bytes[3] === 70)) return { ok: false, error: "only PDF reports can be saved" };
   const folder = child(rootFolder(), "Backups");
-  const title = clean(name);
-  const it = folder.getFilesByName(title);
-  if (it.hasNext()) return SpreadsheetApp.open(it.next());
-  const ss = SpreadsheetApp.create(title);
-  DriveApp.getFileById(ss.getId()).moveTo(folder);
-  const sh = ss.getSheets()[0];
-  sh.setName("Scans");
-  sh.getRange(1, 1, 1, SHEET_HEADERS.length).setValues([SHEET_HEADERS]).setFontWeight("bold");
-  sh.setFrozenRows(1);
-  return ss;
+  const title = clean(name.replace(/\.pdf$/i, "")) + ".pdf";
+  const old = folder.getFilesByName(title);
+  while (old.hasNext()) { const f = old.next(); if (!f.isTrashed()) f.setTrashed(true); }
+  const f = folder.createFile(Utilities.newBlob(bytes, "application/pdf", title));
+  f.setDescription("KeepTrack backup report");
+  return { ok: true, url: f.getUrl(), fileId: f.getId() };
 }
 
 // ---------- helpers ----------

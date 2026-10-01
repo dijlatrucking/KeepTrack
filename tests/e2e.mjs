@@ -48,7 +48,7 @@ const fsGet = async (path, token) => {
 // It also keeps the "Drive" in memory so backups, "free up space" checks and opening a freed scan
 // behave like the real thing.
 const driveFiles = new Map(); // fileId -> { id, docId, data, desc, trashed }
-const backupSheets = new Map(); // sheet name -> rows
+const backupPdfs = []; // { name, text } for each backup report saved
 const existingCopy = (docId, meta) => {
   const f = meta && meta.driveFileId && driveFiles.get(meta.driveFileId);
   return f && !f.trashed && f.desc.startsWith("KeepTrack " + docId) ? f : null;
@@ -78,24 +78,24 @@ const driveServer = http.createServer(async (req, res) => {
   const who = await (await fetch(`http://127.0.0.1:9099/identitytoolkit.googleapis.com/v1/accounts:lookup?key=fake`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ idToken: b.idToken }) })).json();
   if (!who.users) { driveCalls.push({ docId: b.docId, ok: false, why: "token" }); return send({ ok: false, error: "not signed in" }); }
   const uid = who.users[0].localId;
-  if (b.backup || b.verify) {
+  if (b.backup || b.verify || b.savePdf) {
     const me = await fsGet("users/" + uid, b.idToken);
     if (!me || me.role !== "owner") { driveCalls.push({ ok: false, why: "not owner", backup: !!b.backup }); return send({ ok: false, error: "only the owner can do that" }); }
+    if (b.savePdf) {
+      const bytes = Buffer.from(String(b.data || ""), "base64");
+      if (bytes.subarray(0, 4).toString() !== "%PDF") return send({ ok: false, error: "only PDF reports can be saved" });
+      backupPdfs.push({ name: b.savePdf, text: bytes.toString("latin1") });
+      return send({ ok: true, url: "https://drive.test/report/" + backupPdfs.length });
+    }
     const ids = (b.docIds || []).slice(0, 25);
     if (b.verify) {
       const results = [];
       for (const id of ids) results.push({ docId: id, ok: !!existingCopy(id, await fsGet("documents/" + id, b.idToken)) });
       return send({ ok: true, results });
     }
-    const rows = backupSheets.get(b.backup) || [];
     const results = [];
-    for (const id of ids) {
-      const r = await copyOne(id, b.idToken);
-      results.push(r.out);
-      if (r.out.ok) rows.push([r.meta.kind, r.carrier.name, r.meta.loadLabel || "", r.meta.amount || "", r.meta.status, r.out.url, id]);
-    }
-    backupSheets.set(b.backup, rows);
-    return send({ ok: true, sheet: "https://sheets.test/" + encodeURIComponent(b.backup), results });
+    for (const id of ids) results.push((await copyOne(id, b.idToken)).out);
+    return send({ ok: true, results });
   }
   if (b.fetch) {
     const meta = await fsGet("documents/" + b.docId, b.idToken);
@@ -800,18 +800,20 @@ await run("Owner sees roughly how much storage the scans take", async () => {
   if (!real) throw new Error("No scans to test with");
 });
 
-await run("Owner backs up every scan to Drive, with an info sheet listing each one", async () => {
+await run("Owner backs up every scan to Drive, with a PDF report listing each one", async () => {
   const card = owner.locator(".card", { hasText: "Storage & backup" });
   await card.getByRole("button", { name: "Back up to Drive" }).click();
   await toast(owner, /Backed up \d+ scans? to Google Drive$/);
-  await card.getByRole("link", { name: "Open the backup sheet" }).first().waitFor();
+  await card.getByRole("link", { name: "Open the backup report (PDF)" }).first().waitFor();
   const docs = await adminDocs("documents");
   const shouldBe = docs.filter((d) => d.status !== "rejected");
   const missing = shouldBe.filter((d) => !d.backedUpAt || !d.driveFileId);
   if (missing.length) throw new Error(`${missing.length} scans weren't marked as backed up`);
-  const rows = [...backupSheets.values()].flat();
-  if (rows.length !== shouldBe.length) throw new Error(`Backup sheet has ${rows.length} rows, expected ${shouldBe.length}`);
-  if (!rows.some((r) => r[0] === "Lumper" && String(r[3]) === "85")) throw new Error("Lumper receipt info missing from the sheet");
+  if (backupPdfs.length !== 1) throw new Error(`Expected 1 backup report, got ${backupPdfs.length}`);
+  const pdf = backupPdfs[0].text;
+  if (!pdf.includes(`${shouldBe.length} scans copied to Google Drive`)) throw new Error("Report doesn't say how many scans were copied");
+  for (const want of ["Lumper receipt", "$85.00", "Test Carrier A", "Drew Driver", "W-9 Test Carrier A"]) if (!pdf.includes(want)) throw new Error("Report is missing: " + want);
+  if (!/\/URI \(https:\/\/drive\.test\/file_/.test(pdf)) throw new Error("Report has no links to the files in Drive");
   await card.getByText(/Last backup:/).waitFor();
   // a second backup finds nothing new
   await card.getByRole("button", { name: "Back up to Drive" }).click();
@@ -870,11 +872,10 @@ await run("Rinse and repeat: a new scan after freeing is counted, backed up and 
     return t && t.querySelector(".stat-value").textContent === "1";
   });
   const card = owner.locator(".card", { hasText: "Storage & backup" });
-  const rowsBefore = [...backupSheets.values()].flat().length;
   await card.getByRole("button", { name: "Back up to Drive" }).click();
   await toast(owner, "Backed up 1 scan to Google Drive");
-  const added = [...backupSheets.values()].flat().slice(rowsBefore);
-  if (added.length !== 1 || added[0][0] !== "Registrations") throw new Error("The new scan wasn't listed in a backup sheet: " + JSON.stringify(added));
+  const last = backupPdfs[backupPdfs.length - 1];
+  if (backupPdfs.length !== 2 || !last.text.includes("1 scan copied") || !last.text.includes("Registration")) throw new Error("The new scan didn't get its own backup report");
   owner.once("dialog", (d) => d.accept());
   await card.getByRole("button", { name: "Free up space" }).click();
   await toast(owner, /Freed about .* \(1 scan\)/);

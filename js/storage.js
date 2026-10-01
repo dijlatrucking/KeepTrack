@@ -1,14 +1,15 @@
 // Storage meter, "Back up to Drive" and "Free up space" (owner only).
 // Scans live in Firestore (docFiles). The free Firebase plan holds 1 GiB, so the owner can copy every
-// scan to Google Drive with an info sheet, then remove the copies from KeepTrack and start again.
+// scan to Google Drive with a PDF report, then remove the copies from KeepTrack and start again.
 // Records always stay, so search, paperwork lists and duplicate checks keep working; "View" then
 // fetches the scan back from Drive.
 import {
   db, collection, doc, getDoc, getDocs, setDoc, query, where, writeBatch, serverTimestamp, deleteField,
   getAggregateFromServer, getCountFromServer, sum, count,
 } from "./fb.js";
-import { h, card, btn, stat, toast } from "./ui.js";
+import { h, card, btn, stat, toast, STATUS } from "./ui.js";
 import { driveUrl, driveCall } from "./drive.js";
+import { backupPdf } from "./reports.js";
 
 const MB = 1024 * 1024;
 export const FREE_LIMIT = 1024 * MB; // Firestore free plan: 1 GiB of stored data
@@ -64,9 +65,12 @@ export async function measureStorage({ quick = false } = {}) {
   return { ...s, unmeasured, scanBytes, recordBytes, used: scanBytes + recordBytes, limit: FREE_LIMIT };
 }
 
+let carrierNameOf = (id) => id || "";
+const ctxCarrier = (id) => carrierNameOf(id);
+
 const stamp = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}.${String(d.getMinutes()).padStart(2, "0")}`;
 
-// Copy every scan that isn't in Drive yet, and list each one (with its info) in a dated sheet
+// Copy every scan that isn't in Drive yet, and list each one (with its info) in a dated PDF report
 // in KeepTrack / Backups. Each copy is recorded on its document so "Free up space" knows it's safe.
 export async function backupToDrive(onProgress = () => {}) {
   if (!(await driveUrl())) throw new Error("Connect Google Drive first (below).");
@@ -76,14 +80,20 @@ export async function backupToDrive(onProgress = () => {}) {
   const freedIds = new Set(todo.filter((d) => d.fileFreed).map((d) => d.id));
   if (!todo.length) return { done: 0, failed: 0, nothing: true };
   const name = "KeepTrack backup " + stamp(new Date());
-  let done = 0, failed = 0, sheetUrl = null, lastError = "";
+  let done = 0, failed = 0, reportUrl = null, lastError = "";
+  const byId = new Map(todo.map((d) => [d.id, d]));
+  const listed = [], missed = [];
+  const paperOf = (d) => [d.name || d.kind || "Document", d.note].filter(Boolean).join(" · ");
   onProgress(0, todo.length);
   for (let i = 0; i < todo.length; i += BATCH) {
     const part = todo.slice(i, i + BATCH);
     let j = null;
     try { j = await driveCall({ backup: name, docIds: part.map((d) => d.id) }); }
-    catch (e) { lastError = e.message; failed += part.length; onProgress(done + failed, todo.length); continue; }
-    sheetUrl = j.sheet || sheetUrl;
+    catch (e) {
+      lastError = e.message; failed += part.length;
+      part.forEach((d) => missed.push({ paper: paperOf(d), why: e.message }));
+      onProgress(done + failed, todo.length); continue;
+    }
     const b = writeBatch(db);
     for (const r of j.results || []) {
       if (r.ok && r.fileId) {
@@ -92,13 +102,29 @@ export async function backupToDrive(onProgress = () => {}) {
           ...(freedIds.has(r.docId) ? {} : { backedUpAt: serverTimestamp() }), ...(r.size ? { size: r.size } : {}),
         });
         done++;
-      } else { failed++; lastError = r.error || lastError; }
+        const d = byId.get(r.docId) || {};
+        listed.push({
+          date: d.createdAt, carrier: ctxCarrier(d.carrierId), paper: paperOf(d), load: r.load || d.loadLabel || "",
+          sentBy: d.uploaderName || "", amount: d.amount || 0, status: (STATUS[d.status] || [d.status || ""])[0], url: r.url || "",
+        });
+      } else {
+        failed++; lastError = r.error || lastError;
+        missed.push({ paper: paperOf(byId.get(r.docId) || {}), why: r.error });
+      }
     }
     await b.commit();
     onProgress(done + failed, todo.length);
   }
-  await setDoc(doc(db, "settings", "backup"), { lastRunAt: serverTimestamp(), sheetUrl, sheetName: name, count: done, failed }, { merge: true });
-  return { done, failed, sheetUrl, lastError };
+  // The report: one PDF per backup in KeepTrack / Backups.
+  if (listed.length) {
+    try {
+      const when = new Date().toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+      const data = await backupPdf({ title: "KeepTrack backup", sub: when, rows: listed, failed: missed });
+      reportUrl = (await driveCall({ savePdf: name, data })).url || null;
+    } catch (e) { lastError = "the backup report PDF couldn't be saved (" + e.message + ")"; }
+  }
+  await setDoc(doc(db, "settings", "backup"), { lastRunAt: serverTimestamp(), reportUrl, reportName: name, count: done, failed }, { merge: true });
+  return { done, failed, reportUrl, lastError };
 }
 
 // What "Free up space" would remove: scans already backed up, plus scans of rejected papers
@@ -145,6 +171,7 @@ export async function freeUpSpace(plan, onProgress = () => {}) {
 
 // ---------- Settings card ----------
 export function storageCard(ctx) {
+  if (ctx && ctx.carrierName) carrierNameOf = ctx.carrierName;
   const tiles = h("div", { class: "stats stats-compact" }, stat("Storage used", "…", "Measuring"));
   const bar = h("div", { class: "meter-fill" });
   const meterText = h("p", { class: "small" });
@@ -166,7 +193,7 @@ export function storageCard(ctx) {
       const bd = b && b.exists() ? b.data() : null;
       last.replaceChildren(...(bd && bd.lastRunAt ? [
         `Last backup: ${bd.lastRunAt.toDate().toLocaleString([], { dateStyle: "medium", timeStyle: "short" })} · ${bd.count || 0} scan${bd.count === 1 ? "" : "s"}`,
-        bd.sheetUrl ? " · " : "", bd.sheetUrl ? h("a", { href: bd.sheetUrl, target: "_blank", rel: "noopener" }, "Open the backup sheet") : ""] : ["No backups yet."]));
+        bd.reportUrl ? " · " : "", bd.reportUrl ? h("a", { href: bd.reportUrl, target: "_blank", rel: "noopener" }, "Open the backup report (PDF)") : ""] : ["No backups yet."]));
     } catch (e) { console.error(e); meterText.textContent = "Couldn't measure storage right now."; }
   };
   const lock = (on) => { busy = on; backupBtn.disabled = on; freeBtn.disabled = on; };
@@ -181,7 +208,7 @@ export function storageCard(ctx) {
         toast(`Backed up ${r.done} scan${r.done === 1 ? "" : "s"} to Google Drive${r.failed ? `, ${r.failed} didn't make it` : ""}`, r.failed ? "bad" : "ok");
         msg.className = "scanmsg " + (r.failed ? "bad" : "ok");
         msg.replaceChildren(`Backed up ${r.done} scan${r.done === 1 ? "" : "s"}.`, r.failed ? ` ${r.failed} failed${r.lastError ? " (" + r.lastError + ")" : ""}; tap Back up again to retry them.` : "",
-          r.sheetUrl ? " " : "", r.sheetUrl ? h("a", { href: r.sheetUrl, target: "_blank", rel: "noopener" }, "Open the backup sheet") : "");
+          r.reportUrl ? " " : "", r.reportUrl ? h("a", { href: r.reportUrl, target: "_blank", rel: "noopener" }, "Open the backup report (PDF)") : "");
       }
     } catch (e) { toast(e.message, "bad"); }
     backupBtn.textContent = "Back up to Drive";
@@ -213,7 +240,7 @@ export function storageCard(ctx) {
   return card("Storage & backup", null,
     h("div", { class: "meter", role: "img", "aria-label": "Storage used" }, bar), meterText, tiles,
     h("div", { class: "row-inline" }, backupBtn, freeBtn), msg, last,
-    h("p", { class: "muted small" }, "Estimates. Back up to Drive copies every new scan into your Drive folders and lists each one (date, carrier, type, load, who sent it, amount, status, link) in a dated sheet in KeepTrack / Backups. Free up space then removes those scans from KeepTrack, only after Drive confirms each copy is there. Rejected duplicates and bad photos are cleared too."));
+    h("p", { class: "muted small" }, "Estimates. Back up to Drive copies every new scan into your Drive folders and lists each one (date, carrier, paper, load, who sent it, amount, status, link) in a PDF report in KeepTrack / Backups. Free up space then removes those scans from KeepTrack, only after Drive confirms each copy is there. Rejected duplicates and bad photos are cleared too."));
 }
 
 // Overview nudge when the free plan is getting full.

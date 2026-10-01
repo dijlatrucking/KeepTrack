@@ -1,4 +1,4 @@
-// Runs the real Google Drive Apps Script (drive/KeepTrackDrive.gs) against a fake Drive, Sheets and
+// Runs the real Google Drive Apps Script (drive/KeepTrackDrive.gs) against a fake Drive and
 // Firestore, so where files go, what they're called, de-duplication, moving older copies, backups,
 // "free up space" checks and opening moved scans are all checked without a Google account.
 // Run: node drive-script.test.mjs
@@ -50,20 +50,6 @@ const DriveApp = {
   searchFiles: (q) => iter([...files.values()].filter((f) => matches(f, q))),
 };
 
-// ---------- fake Sheets ----------
-const sheets = new Map();
-const SpreadsheetApp = {
-  create(title) {
-    const file = myDrive.createFile(blobOf([], "application/vnd.google-apps.spreadsheet", title));
-    const sheet = { name: "Sheet1", rows: [], setName(n) { this.name = n; }, getLastRow() { return this.rows.length; }, setFrozenRows() {},
-      getRange(r, c, nr, nc) { const sh = this; return { setValues(v) { v.forEach((row, i) => { sh.rows[r - 1 + i] = row; }); return this; }, setFontWeight() { return this; } }; } };
-    const ss = { file, sheet, getId: () => file.id, getUrl: () => "https://sheets.test/" + file.id, getSheets: () => [sheet] };
-    sheets.set(file.id, ss);
-    return ss;
-  },
-  open(file) { return sheets.get(file.id); },
-};
-
 // ---------- fake Firebase (sign-in + Firestore REST, with simple access rules) ----------
 const users = { "tok-owner": "owner1", "tok-driver": "drv1", "tok-disp": "disp1", "tok-stranger": "nobody" };
 const db = {};
@@ -88,7 +74,7 @@ const UrlFetchApp = {
 };
 
 const ctx = vm.createContext({
-  DriveApp, SpreadsheetApp, UrlFetchApp,
+  DriveApp, UrlFetchApp,
   Utilities: {
     newBlob: (bytes, type, name) => blobOf(bytes, type, name),
     base64Decode: (s) => Buffer.from(s, "base64"),
@@ -225,7 +211,7 @@ check("Copies saved by the first version of the script are moved into the new la
   eq(carrier.trashed, false, "carrier folder kept");
 });
 
-check("Back up: owner only; copies a batch and lists each scan in a dated sheet in KeepTrack / Backups", () => {
+check("Back up: owner only; confirms every scan in the batch without copying anything twice", () => {
   const denied = call({ idToken: "tok-disp", backup: "KeepTrack backup 2026-10-01 00.10", docIds: ["docBOL1abcdefghijklm"] });
   eq(denied.ok, false, "dispatcher refused");
   const ids = ["docBOL1abcdefghijklm", "docLUMPabcdefghijklm", "docFUELabcdefghijklm"];
@@ -233,12 +219,23 @@ check("Back up: owner only; copies a batch and lists each scan in a dated sheet 
   const r = call({ idToken: "tok-owner", backup: "KeepTrack backup 2026-10-01 00.10", docIds: ids });
   eq(r.ok, true, "ok");
   eq(r.results.every((x) => x.ok && x.fileId), true, "every scan confirmed");
-  eq(files.size, before + 1, "only the sheet is new (scans were already in Drive)");
-  const ss = [...sheets.values()][0];
-  eq(pathOf(ss.file), "KeepTrack / Backups", "sheet folder");
-  eq(ss.sheet.rows.length, 4, "header + 3 rows");
-  eq(ss.sheet.rows[2][7], 85, "lumper amount column");
-  eq(ss.sheet.rows[2][4], "4471823 · Boise ID → Denver CO", "load column");
+  eq(files.size, before, "nothing new (scans were already in Drive)");
+  eq(r.results[1].load, "4471823 · Boise ID → Denver CO", "load title for the report");
+});
+
+check("The backup report PDF is saved in KeepTrack / Backups (owner only, PDFs only)", () => {
+  const pdf = Buffer.from("%PDF-1.3 backup report").toString("base64");
+  eq(call({ idToken: "tok-disp", savePdf: "KeepTrack backup 2026-10-01 00.10", data: pdf }).ok, false, "dispatcher refused");
+  eq(call({ idToken: "tok-owner", savePdf: "Sneaky", data: Buffer.from("<script>").toString("base64") }).ok, false, "non-PDF refused");
+  const r = call({ idToken: "tok-owner", savePdf: "KeepTrack backup 2026-10-01 00.10", data: pdf });
+  eq(r.ok, true, "saved");
+  const f = files.get(r.fileId);
+  eq(pathOf(f), "KeepTrack / Backups", "folder");
+  eq(f.name, "KeepTrack backup 2026-10-01 00.10.pdf", "name");
+  eq(f.blob.type, "application/pdf", "type");
+  const again = call({ idToken: "tok-owner", savePdf: "KeepTrack backup 2026-10-01 00.10", data: pdf });
+  eq(f.trashed, true, "a re-run in the same minute replaces the report");
+  eq(files.get(again.fileId).trashed, false, "new report kept");
 });
 
 check("Verify only confirms copies that are really there and really this document's", () => {
@@ -265,7 +262,7 @@ check("Backing up a freed scan still works (it's already in Drive) and doesn't d
   const before = files.size;
   const r = call({ idToken: "tok-owner", backup: "KeepTrack backup 2026-10-02 08.00", docIds: ["docBOL1abcdefghijklm"] });
   eq(r.results[0].ok, true, "ok");
-  eq(files.size, before + 1, "only a new sheet");
+  eq(files.size, before, "no new copy");
 });
 
 check("A rejected duplicate is trashed in Drive; non-rejected papers can't be removed", () => {
