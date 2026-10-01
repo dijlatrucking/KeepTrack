@@ -1,6 +1,6 @@
 import {
   isConfigured, auth, db, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword,
-  signOut, sendPasswordResetEmail, doc, getDoc, setDoc, onSnapshot, writeBatch, serverTimestamp
+  signOut, sendPasswordResetEmail, doc, getDoc, setDoc, onSnapshot, writeBatch, serverTimestamp, collection
 } from "./fb.js";
 import { h, field, input, btn, toast, friendlyError } from "./ui.js";
 import { loadCarriers } from "./data.js";
@@ -19,6 +19,7 @@ const ROLES = {
 const root = document.getElementById("app");
 let profileUnsub = null;
 let viewSubs = [];
+let shellCarrierUnsub = null;
 let pendingAuthError = "";
 let signingUp = false;
 
@@ -186,6 +187,21 @@ async function renderShell(user, profile) {
   let carriers = [];
   try { carriers = await loadCarriers(profile); } catch (e) { console.error(e); }
   const carrierNames = new Map(carriers.map((c) => [c.id, c.name]));
+  // Keep carrier records live (settings, names) without redrawing the whole page.
+  const carrierListeners = new Set();
+  if (shellCarrierUnsub) shellCarrierUnsub();
+  const applyCarrier = (id, data) => {
+    const c = carriers.find((x) => x.id === id);
+    if (c) Object.assign(c, data); else carriers.push({ id, ...data });
+    carrierNames.set(id, data.name);
+  };
+  const notify = () => carrierListeners.forEach((fn) => { try { fn(); } catch (e) { console.error(e); } });
+  if (profile.role === "owner" || (profile.role === "dispatcher" && profile.allCarriers)) {
+    shellCarrierUnsub = onSnapshot(collection(db, "carriers"), (snap) => { snap.docs.forEach((d) => applyCarrier(d.id, d.data())); notify(); }, () => {});
+  } else {
+    const uns = carriers.map((c) => onSnapshot(doc(db, "carriers", c.id), (d) => { if (d.exists()) { applyCarrier(d.id, d.data()); notify(); } }, () => {}));
+    shellCarrierUnsub = () => uns.forEach((u) => u());
+  }
 
   const views = role.views;
   const current = () => views.find((v) => "#" + v.id === location.hash) || views[0];
@@ -199,6 +215,8 @@ async function renderShell(user, profile) {
     carrierName: (id) => carrierNames.get(id) || (id ? "Carrier" : "—"),
     sub: (u) => viewSubs.push(u),
     reload: () => renderShell(user, profile),
+    // Pages that do money math listen here so a carrier's new factoring % or fee shows up right away.
+    onCarriers: (fn) => { carrierListeners.add(fn); viewSubs.push(() => carrierListeners.delete(fn)); },
   };
 
   const show = () => {

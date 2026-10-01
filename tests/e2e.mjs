@@ -517,9 +517,10 @@ await run("Carrier books its own load (no dispatcher, no dispatch fee)", async (
 
 await run("Owner sees every carrier or picks one: Summary, Expenses, Accounts", async () => {
   await nav(owner, "Summary");
-  await owner.locator("table.sum th", { hasText: "Test Carrier A" }).waitFor();
   await owner.getByLabel("Carrier", { exact: true }).selectOption({ label: "Test Carrier A" });
   await owner.locator("table.sum th", { hasText: "Unit 7" }).waitFor();
+  // the carrier's own factoring settings reach the owner's screen live
+  await owner.locator("table.sum tr", { hasText: "GAP fees" }).first().getByText("-$40").first().waitFor();
   await nav(owner, "Expenses");
   await owner.locator(".chip", { hasText: "All time" }).first().click();
   await owner.locator(".item", { hasText: "$461.77" }).first().waitFor();

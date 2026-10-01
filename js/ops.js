@@ -115,6 +115,7 @@ export function watchOps(ctx, ids, cb, { expenses = true, drivers = false } = {}
     ctx.sub(watchMany(scoped(ctx, "recurring", ids), (r) => { st.recurring = r; fire("r"); }));
   }
   if (drivers) ctx.sub(watchMany(scoped(ctx, "users", ids, where("role", "==", "driver")), (r) => { st.drivers = r; fire("d"); }));
+  if (ctx.onCarriers) ctx.onCarriers(() => { clearTimeout(t); t = setTimeout(() => cb(st), 40); });
   ctx.sub(() => clearTimeout(t));
 }
 
