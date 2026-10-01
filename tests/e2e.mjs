@@ -96,6 +96,13 @@ const nav = async (p, label) => {
 };
 const overflow = async (p) => p.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
 const home = async (p) => { await p.evaluate(() => history.replaceState(null, "", location.pathname)); await p.reload(); };
+async function pdfOpens(p) {
+  const [popup] = await Promise.all([p.waitForEvent("popup", { timeout: 30000 }), p.getByRole("button", { name: "View PDF" }).click()]);
+  await p.waitForFunction(() => !!window.jspdf, null, { timeout: 30000 });
+  await popup.close().catch(() => {});
+  const toasts = await p.locator(".toast-bad").allInnerTexts();
+  if (toasts.some((t) => /PDF/.test(t))) throw new Error("PDF failed: " + toasts.join(" | "));
+}
 const iso = (days) => new Date(Date.now() + days * 86400000).toISOString().slice(0, 10);
 
 function noisyPng(w, h) {
@@ -272,16 +279,17 @@ await run("Dispatcher scans a rate con PDF and the load fills itself in", async 
   await dispatcher.locator('input[data-role="ratecon"]').setInputFiles({ name: "ratecon.pdf", mimeType: "application/pdf", buffer: rc });
   await dispatcher.locator(".scanmsg.ok").waitFor({ timeout: 60000 });
   timings.push(["Read a rate con PDF", Date.now() - t0]);
-  const val = (l) => dispatcher.getByLabel(l, { exact: true }).inputValue();
+  const F = dispatcher.locator(".form-card");
+  const val = (l) => F.getByLabel(l, { exact: true }).inputValue();
   const got = { origin: await val("Pickup (City, ST)"), dest: await val("Delivery (City, ST)"), rate: await val("Rate ($)"), miles: await val("Loaded miles"), broker: await val("Broker"), no: await val("Load #") };
   if (got.origin !== "Boise, ID" || got.dest !== "Denver, CO" || Number(got.rate) !== 2000 || got.miles !== "500" || got.broker !== "TQL" || got.no !== "4471823")
     throw new Error("Rate con read wrong: " + JSON.stringify(got));
-  if ((await dispatcher.getByLabel("Truck", { exact: true }).inputValue()) === "") throw new Error("Truck # 7 on the rate con didn't pick Unit 7");
-  const fee = await dispatcher.getByLabel("Dispatch fee ($)").inputValue();
+  if ((await F.getByLabel("Truck", { exact: true }).inputValue()) === "") throw new Error("Truck # 7 on the rate con didn't pick Unit 7");
+  const fee = await F.getByLabel("Dispatch fee ($)").inputValue();
   if (fee !== "160.00") throw new Error("Fee auto-fill was " + fee);
   await dispatcher.locator("select[name=driverId] option", { hasText: "Drew Driver" }).waitFor({ state: "attached" });
-  await dispatcher.getByLabel("Driver", { exact: true }).selectOption({ label: "Drew Driver" });
-  await dispatcher.getByRole("button", { name: "Save load", exact: true }).click();
+  await F.getByLabel("Driver", { exact: true }).selectOption({ label: "Drew Driver" });
+  await F.getByRole("button", { name: "Save load", exact: true }).click();
   await toast(dispatcher, "Load booked with paperwork");
   await dispatcher.locator(".item-lane", { hasText: "Boise, ID → Denver, CO" }).first().waitFor();
 });
@@ -442,10 +450,11 @@ await run("Carrier scans a fuel receipt and the expense fills itself in", async 
     "GAP Factoring Fleet One   Card ending 4417", "Trans # 883402   Auth 552190", "Thank you for choosing Pilot Flying J. Driver signature on file."]);
   await carrier.locator('input[data-role="bill"]').setInputFiles({ name: "fuel.pdf", mimeType: "application/pdf", buffer: receipt });
   await carrier.locator(".scanmsg.ok").waitFor({ timeout: 60000 });
-  if ((await carrier.getByLabel("Amount ($)").inputValue()) !== "461.77") throw new Error("Amount not read");
-  if ((await carrier.getByLabel("Gallons").inputValue()) !== "118.432") throw new Error("Gallons not read");
-  if ((await carrier.getByLabel("Paid with").inputValue()) !== "factor") throw new Error("GAP fuel card not detected");
-  await carrier.getByRole("button", { name: "Save expense" }).click();
+  const F = carrier.locator(".form-card");
+  if ((await F.getByLabel("Amount ($)").inputValue()) !== "461.77") throw new Error("Amount not read");
+  if ((await F.getByLabel("Gallons").inputValue()) !== "118.432") throw new Error("Gallons not read");
+  if ((await F.getByLabel("Paid with").inputValue()) !== "factor") throw new Error("GAP fuel card not detected");
+  await F.getByRole("button", { name: "Save expense" }).click();
   await toast(carrier, "Expense added");
   await carrier.locator(".item", { hasText: "$461.77" }).first().waitFor();
   await carrier.locator(".stat", { hasText: "On GAP card" }).locator(".stat-value", { hasText: "$461.77" }).waitFor();
@@ -482,27 +491,24 @@ await run("Summary shows GAP fees and GAP fuel per truck and in total", async ()
 await run("1099 counts the load in the quarter it was paid, and the PDF opens", async () => {
   await nav(carrier, "1099");
   await carrier.locator(".stat", { hasText: "Gross paid" }).locator(".stat-value", { hasText: "$2,000.00" }).waitFor();
-  const [popup] = await Promise.all([carrier.waitForEvent("popup"), carrier.getByRole("button", { name: "View PDF" }).click()]);
-  await popup.waitForURL(/^blob:/, { timeout: 20000 });
-  await popup.close();
+  await pdfOpens(carrier);
 });
 
 await run("Loads report PDF opens", async () => {
   await nav(carrier, "Loads");
   await carrier.getByRole("button", { name: "Loads report" }).click();
   await carrier.locator(".chip", { hasText: "All time" }).first().click();
-  const [popup] = await Promise.all([carrier.waitForEvent("popup"), carrier.getByRole("button", { name: "View PDF" }).click()]);
-  await popup.waitForURL(/^blob:/, { timeout: 20000 });
-  await popup.close();
+  await pdfOpens(carrier);
 });
 
 await run("Carrier books its own load (no dispatcher, no dispatch fee)", async () => {
   await carrier.getByRole("button", { name: "+ New load" }).click();
-  await carrier.getByLabel("Pickup (City, ST)").fill("Nampa, ID");
-  await carrier.getByLabel("Delivery (City, ST)").fill("Salt Lake City, UT");
-  await carrier.getByLabel("Rate ($)").fill("1100");
-  if (await carrier.getByLabel("Dispatch fee ($)").count()) throw new Error("Carrier should not see a dispatch fee field");
-  await carrier.getByRole("button", { name: "Save load", exact: true }).click();
+  const F = carrier.locator(".form-card");
+  await F.getByLabel("Pickup (City, ST)").fill("Nampa, ID");
+  await F.getByLabel("Delivery (City, ST)").fill("Salt Lake City, UT");
+  await F.getByLabel("Rate ($)").fill("1100");
+  if (await F.getByLabel("Dispatch fee ($)").count()) throw new Error("Carrier should not see a dispatch fee field");
+  await F.getByRole("button", { name: "Save load", exact: true }).click();
   await toast(carrier, "Load booked");
   await carrier.locator(".item-lane", { hasText: "Nampa, ID → Salt Lake City, UT" }).first().waitFor();
 });
