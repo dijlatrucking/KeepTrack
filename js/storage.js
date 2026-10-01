@@ -72,11 +72,12 @@ const stamp = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, 
 
 // Copy every scan that isn't in Drive yet, and list each one (with its info) in a dated PDF report
 // in KeepTrack / Backups. Each copy is recorded on its document so "Free up space" knows it's safe.
-export async function backupToDrive(onProgress = () => {}) {
+// With { all: true } it goes over everything again (nothing is copied twice) to make a fresh, complete report.
+export async function backupToDrive(onProgress = () => {}, { all = false } = {}) {
   if (!(await driveUrl())) throw new Error("Connect Google Drive first (below).");
   // New scans, plus anything filed under an older Drive layout (those get moved into place, not copied again).
   const todo = (await allDocs()).filter((d) => !d.fileCleared && d.status !== "rejected" &&
-    (d.fileFreed ? d.driveFileId && d.driveLayout !== DRIVE_LAYOUT : !d.backedUpAt || d.driveLayout !== DRIVE_LAYOUT));
+    (d.fileFreed ? d.driveFileId && (all || d.driveLayout !== DRIVE_LAYOUT) : all || !d.backedUpAt || d.driveLayout !== DRIVE_LAYOUT));
   const freedIds = new Set(todo.filter((d) => d.fileFreed).map((d) => d.id));
   if (!todo.length) return { done: 0, failed: 0, nothing: true };
   const name = "KeepTrack backup " + stamp(new Date());
@@ -202,12 +203,20 @@ export function storageCard(ctx) {
     lock(true);
     msg.className = "scanmsg"; msg.textContent = "";
     try {
-      const r = await backupToDrive((n, t) => { backupBtn.textContent = `Backing up… ${n}/${t}`; });
+      const progress = (n, t) => { backupBtn.textContent = `Backing up… ${n}/${t}`; };
+      let r = await backupToDrive(progress);
+      // Nothing new? Offer a fresh report of everything (e.g. the last report was deleted).
+      if (r.nothing && confirm("Everything is already backed up in Google Drive.\n\nMake a fresh backup report (PDF) that lists everything in Drive?")) {
+        r = await backupToDrive(progress, { all: true });
+      }
       if (r.nothing) { toast("Everything is already backed up.", "ok"); }
       else {
-        toast(`Backed up ${r.done} scan${r.done === 1 ? "" : "s"} to Google Drive${r.failed ? `, ${r.failed} didn't make it` : ""}`, r.failed ? "bad" : "ok");
-        msg.className = "scanmsg " + (r.failed ? "bad" : "ok");
-        msg.replaceChildren(`Backed up ${r.done} scan${r.done === 1 ? "" : "s"}.`, r.failed ? ` ${r.failed} failed${r.lastError ? " (" + r.lastError + ")" : ""}; tap Back up again to retry them.` : "",
+        const noReport = !r.reportUrl && r.lastError && /report/.test(r.lastError);
+        toast(`Backed up ${r.done} scan${r.done === 1 ? "" : "s"} to Google Drive${r.failed ? `, ${r.failed} didn't make it` : ""}`, r.failed || noReport ? "bad" : "ok");
+        msg.className = "scanmsg " + (r.failed || noReport ? "bad" : "ok");
+        msg.replaceChildren(`Backed up ${r.done} scan${r.done === 1 ? "" : "s"}.`,
+          r.failed ? ` ${r.failed} failed${r.lastError ? " (" + r.lastError + ")" : ""}; tap Back up again to retry them.` : "",
+          noReport ? " But " + r.lastError + ". If you haven't yet, update the Drive script (Copy the script below, then deploy a new version) and tap Back up again." : "",
           r.reportUrl ? " " : "", r.reportUrl ? h("a", { href: r.reportUrl, target: "_blank", rel: "noopener" }, "Open the backup report (PDF)") : "");
       }
     } catch (e) { toast(e.message, "bad"); }

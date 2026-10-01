@@ -815,9 +815,18 @@ await run("Owner backs up every scan to Drive, with a PDF report listing each on
   for (const want of ["Lumper receipt", "$85.00", "Test Carrier A", "Drew Driver", "W-9 Test Carrier A"]) if (!pdf.includes(want)) throw new Error("Report is missing: " + want);
   if (!/\/URI \(https:\/\/drive\.test\/file_/.test(pdf)) throw new Error("Report has no links to the files in Drive");
   await card.getByText(/Last backup:/).waitFor();
-  // a second backup finds nothing new
+  // a second backup finds nothing new: declining the fresh report changes nothing
+  owner.once("dialog", (d) => d.dismiss());
   await card.getByRole("button", { name: "Back up to Drive" }).click();
   await toast(owner, "Everything is already backed up.");
+  if (backupPdfs.length !== 1) throw new Error("A report was made without asking");
+  // the report was deleted in Drive? a fresh one lists everything again, without copying anything twice
+  const copies = driveFiles.size;
+  owner.once("dialog", (d) => d.accept());
+  await card.getByRole("button", { name: "Back up to Drive" }).click();
+  await toast(owner, /Backed up \d+ scans? to Google Drive$/);
+  if (backupPdfs.length !== 2 || !backupPdfs[1].text.includes(`${shouldBe.length} scans copied`)) throw new Error("Fresh report doesn't list everything");
+  if (driveFiles.size !== copies) throw new Error("Making a fresh report copied scans again");
 });
 
 await run("A dispatcher can't run a backup through the Drive script", async () => {
@@ -875,7 +884,7 @@ await run("Rinse and repeat: a new scan after freeing is counted, backed up and 
   await card.getByRole("button", { name: "Back up to Drive" }).click();
   await toast(owner, "Backed up 1 scan to Google Drive");
   const last = backupPdfs[backupPdfs.length - 1];
-  if (backupPdfs.length !== 2 || !last.text.includes("1 scan copied") || !last.text.includes("Registration")) throw new Error("The new scan didn't get its own backup report");
+  if (backupPdfs.length !== 3 || !last.text.includes("1 scan copied") || !last.text.includes("Registration")) throw new Error("The new scan didn't get its own backup report");
   owner.once("dialog", (d) => d.accept());
   await card.getByRole("button", { name: "Free up space" }).click();
   await toast(owner, /Freed about .* \(1 scan\)/);
