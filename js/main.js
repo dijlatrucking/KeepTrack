@@ -20,6 +20,7 @@ const root = document.getElementById("app");
 let profileUnsub = null;
 let viewSubs = [];
 let shellCarrierUnsub = null;
+let renderToken = 0;
 let pendingAuthError = "";
 let signingUp = false;
 
@@ -184,22 +185,34 @@ async function renderShell(user, profile) {
   const role = ROLES[profile.role];
   if (!role) return renderNoProfile(user);
 
+  // Only the newest render may draw: if the profile changes again while carriers are loading,
+  // the older render stops here instead of overwriting the newer screen.
+  const token = ++renderToken;
   let carriers = [];
   try { carriers = await loadCarriers(profile); } catch (e) { console.error(e); }
+  if (token !== renderToken) return;
   const carrierNames = new Map(carriers.map((c) => [c.id, c.name]));
   // Keep carrier records live (settings, names) without redrawing the whole page.
   const carrierListeners = new Set();
   if (shellCarrierUnsub) shellCarrierUnsub();
+  // A carrier the screen didn't have yet (assigned a moment ago, or a slow first load) redraws the page.
+  let rebuild = null;
   const applyCarrier = (id, data) => {
     const c = carriers.find((x) => x.id === id);
-    if (c) Object.assign(c, data); else carriers.push({ id, ...data });
+    if (c) Object.assign(c, data);
+    else {
+      carriers.push({ id, ...data });
+      if (!rebuild) rebuild = setTimeout(() => { if (token === renderToken) renderShell(user, profile); }, 300);
+    }
     carrierNames.set(id, data.name);
   };
   const notify = () => carrierListeners.forEach((fn) => { try { fn(); } catch (e) { console.error(e); } });
   if (profile.role === "owner" || (profile.role === "dispatcher" && profile.allCarriers)) {
     shellCarrierUnsub = onSnapshot(collection(db, "carriers"), (snap) => { snap.docs.forEach((d) => applyCarrier(d.id, d.data())); notify(); }, () => {});
   } else {
-    const uns = carriers.map((c) => onSnapshot(doc(db, "carriers", c.id), (d) => { if (d.exists()) { applyCarrier(d.id, d.data()); notify(); } }, () => {}));
+    // listen to every carrier this profile is entitled to, not just the ones that loaded
+    const ids = profile.role === "dispatcher" ? profile.assignedCarriers || [] : profile.carrierId ? [profile.carrierId] : [];
+    const uns = ids.map((id) => onSnapshot(doc(db, "carriers", id), (d) => { if (d.exists()) { applyCarrier(d.id, d.data()); notify(); } }, () => {}));
     shellCarrierUnsub = () => uns.forEach((u) => u());
   }
 
