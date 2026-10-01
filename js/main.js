@@ -187,6 +187,7 @@ async function renderShell(user, profile) {
 
   const ctx = {
     uid: user.uid, profile, carriers,
+    global: profile.role === "owner" || (profile.role === "dispatcher" && !!profile.allCarriers),
     carrierName: (id) => carrierNames.get(id) || (id ? "Carrier" : "—"),
     sub: (u) => viewSubs.push(u),
     reload: () => renderShell(user, profile),
@@ -229,7 +230,10 @@ if (!isConfigured) {
     if (!user) return signingUp ? null : renderAuth();
     renderNoProfile(user);
     let lastKey = "";
-    profileUnsub = onSnapshot(doc(db, "users", user.uid), (snap) => {
+    // Wait for the server-confirmed profile: right after sign-up the local copy exists a moment
+    // before the server has it, and queries sent in that gap would be refused.
+    profileUnsub = onSnapshot(doc(db, "users", user.uid), { includeMetadataChanges: true }, (snap) => {
+      if (snap.metadata.hasPendingWrites) return;
       if (!snap.exists()) return renderNoProfile(user);
       const p = snap.data();
       // Re-render the shell only when access-relevant fields change.

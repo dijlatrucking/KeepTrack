@@ -445,8 +445,9 @@ await run("Owner Overview loads with the full volume", async () => {
   await owner.reload();
   await heading(owner, "Overview");
   await owner.locator(".stat-value", { hasText: String(CARRIERS + 1) }).first().waitFor({ timeout: 60000 });
-  await owner.locator(".row", { hasText: "BOL · VOL299" }).first().waitFor({ timeout: 60000 });
-  await owner.locator("table tbody tr").nth(200).waitFor({ timeout: 90000 });
+  await owner.locator(".more", { hasText: "of 300" }).first().waitFor({ timeout: 60000 });
+  await owner.locator(".more", { hasText: `of ${LOADS + 1}` }).first().waitFor({ timeout: 60000 });
+  await owner.locator("table tbody tr").nth(99).waitFor({ timeout: 60000 });
   timings.push([`Owner Overview with ${LOADS} loads, ${PENDING_DOCS} pending docs, ${REQUESTS} requests`, Date.now() - t0]);
   const rows = await owner.locator("table tbody tr").count();
   const dom = await owner.evaluate(() => document.getElementsByTagName("*").length);
@@ -456,8 +457,16 @@ await run("Owner Overview loads with the full volume", async () => {
 await run("Owner switches to the Loads page with the full volume", async () => {
   const t0 = Date.now();
   await nav(owner, "Loads");
-  await owner.locator("table tbody tr").nth(200).waitFor({ timeout: 90000 });
+  await owner.locator("table tbody tr").nth(99).waitFor({ timeout: 60000 });
   timings.push(["Owner Loads page (volume)", Date.now() - t0]);
+});
+
+await run("Load board search finds one load among 2,000", async () => {
+  const t0 = Date.now();
+  await owner.getByLabel("Search loads").fill("Boise, ID → Denver");
+  await owner.waitForFunction(() => document.querySelectorAll("table tbody tr").length === 1, null, { timeout: 15000 });
+  timings.push(["Search 2,000 loads", Date.now() - t0]);
+  await owner.getByLabel("Search loads").fill("");
 });
 
 await run("Load board filter responds quickly at volume", async () => {
@@ -476,8 +485,8 @@ await run("An all-carriers dispatcher loads Tasks across 41 carriers", async () 
   const t0 = Date.now();
   await dispatcher.reload();
   await heading(dispatcher, "Tasks");
-  await dispatcher.locator(".row", { hasText: "BOL · VOL299" }).first().waitFor({ timeout: 90000 });
-  await dispatcher.locator("table tbody tr").nth(200).waitFor({ timeout: 90000 });
+  await dispatcher.locator(".more", { hasText: "of 300" }).first().waitFor({ timeout: 60000 });
+  await dispatcher.locator("table tbody tr").nth(99).waitFor({ timeout: 60000 });
   timings.push(["All-carriers dispatcher Tasks page (volume)", Date.now() - t0]);
 });
 

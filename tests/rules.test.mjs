@@ -244,6 +244,9 @@ await allow("dispatcher lists assigned carrier's drivers (load form)", () => get
 await deny("dispatcher lists unassigned carrier's drivers", () => getDocs(q(s, "users", eq("carrierId", "B"), eq("role", "driver"))));
 await deny("dispatcher with no carriers reads carrier A", () => getDoc(doc(as("dispNone"), "carriers/A")));
 await allow("all-carriers dispatcher reads carrier B loads", () => getDocs(q(as("dispAll"), "loads", eq("carrierId", "B"))));
+await allow("all-carriers dispatcher lists every load in one query", () => getDocs(collection(as("dispAll"), "loads")));
+await allow("all-carriers dispatcher lists all pending docs in one query", () => getDocs(q(as("dispAll"), "documents", eq("status", "pending"))));
+await deny("assigned-only dispatcher can't use the all-loads query", () => getDocs(collection(as("dispA"), "loadMoney")));
 await allow("all-carriers dispatcher lists carriers (app query)", () => getDocs(collection(as("dispAll"), "carriers")));
 
 // ---------- Owner ----------

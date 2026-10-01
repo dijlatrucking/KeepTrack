@@ -170,3 +170,6 @@ details.stub summary { display: flex; justify-content: space-between; gap: 12px;
 .toast { background: var(--ink); color: #fff; padding: 12px 16px; border-radius: 10px; font-size: 14px; max-width: 340px; box-shadow: 0 6px 20px rgba(0,0,0,0.18); }
 .toast-ok { background: var(--ok); }
 .toast-bad { background: var(--bad); }
+
+/* Long lists */
+.more { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 12px; border-top: 1px solid var(--line-soft); }

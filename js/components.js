@@ -4,7 +4,7 @@ import {
   serverTimestamp, writeBatch, ref, getDownloadURL
 } from "./fb.js";
 import { h, card, table, pill, money, num, fmtDate, ago, field, input, select, btn, formToObj, guard, toast } from "./ui.js";
-import { watch, watchMany, perCarrier, byNewest } from "./data.js";
+import { watch, watchMany, perCarrier, scoped, byNewest } from "./data.js";
 
 const LOAD_STATUSES = [
   { value: "booked", label: "Booked" },
@@ -117,10 +117,12 @@ export async function uploadDoc(ctx, file, meta) {
 export function docsReviewQueue(ctx, carrierIds, onCount) {
   const body = h("div");
   const box = card("Docs to review", h("span", { class: "muted small" }, "Approved docs pass up to the carrier + owner"), body);
-  ctx.sub(watchMany(perCarrier("documents", carrierIds, where("status", "==", "pending")), (docs) => {
-    docs.sort(byNewest);
+  let limit = 25, last = [];
+  const draw = (docs) => {
+    last = docs;
+    docs.sort((a, b) => -byNewest(a, b)); // oldest first: first in, first reviewed
     onCount && onCount(docs.length);
-    body.replaceChildren(docs.length ? h("div", { class: "list" }, docs.map((d) => h("div", { class: "row" },
+    body.replaceChildren(docs.length ? h("div", { class: "list" }, docs.slice(0, limit).map((d) => h("div", { class: "row" },
       h("div", { class: "badge-kind" }, (d.kind || "DOC").slice(0, 4).toUpperCase()),
       h("div", { class: "grow" },
         h("div", { class: "strong" }, d.name),
@@ -128,8 +130,9 @@ export function docsReviewQueue(ctx, carrierIds, onCount) {
       btn("View", () => openDoc(d)),
       btn("Approve", () => guard(() => updateDoc(doc(db, "documents", d.id), { status: "approved", reviewedBy: ctx.uid, reviewedAt: serverTimestamp() }), "Approved"), "ok"),
       btn("Reject", () => guard(() => updateDoc(doc(db, "documents", d.id), { status: "rejected", reviewedBy: ctx.uid, reviewedAt: serverTimestamp() }), "Rejected"), "ghost"),
-    ))) : h("p", { class: "empty" }, "All caught up."));
-  }));
+    )), moreButton(docs.length, limit, () => { limit += 25; draw(last); })) : h("p", { class: "empty" }, "All caught up."));
+  };
+  ctx.sub(watchMany(scoped(ctx, "documents", carrierIds, where("status", "==", "pending")), draw));
   return box;
 }
 
@@ -137,16 +140,28 @@ export function docsReviewQueue(ctx, carrierIds, onCount) {
 
 export function requestsList(ctx, carrierIds, { staff, onCount } = {}) {
   const body = h("div");
-  ctx.sub(watchMany(perCarrier("requests", carrierIds), (reqs) => {
-    reqs.sort(byNewest);
+  const drafts = new Map(); // half-typed replies survive live updates
+  let limit = 25, last = [];
+  const draw = (reqs) => {
+    last = reqs;
+    // Keep focus in the reply box the dispatcher is typing in.
+    const focused = document.activeElement && document.activeElement.dataset ? document.activeElement.dataset.reqId : null;
+    const rank = (r) => (r.status === "open" ? 0 : 1);
+    reqs.sort((a, b) => rank(a) - rank(b) || byNewest(a, b));
     onCount && onCount(reqs.filter((r) => r.status === "open").length);
-    body.replaceChildren(reqs.length ? h("div", { class: "list" }, reqs.map((r) => {
+    const shown = reqs.slice(0, limit);
+    let refocus = null;
+    body.replaceChildren(reqs.length ? h("div", { class: "list" }, shown.map((r) => {
+      const replyIn = input("reply", { placeholder: "Reply to the carrier…", "aria-label": "Reply", value: drafts.get(r.id) || "", "data-req-id": r.id });
+      replyIn.addEventListener("input", () => drafts.set(r.id, replyIn.value));
+      if (focused === r.id) refocus = replyIn;
       const replyBox = h("form", { class: "inline-form", onSubmit: async (e) => {
         e.preventDefault();
-        const text = e.target.reply.value.trim();
+        const text = replyIn.value.trim();
         if (!text) return;
-        await guard(() => updateDoc(doc(db, "requests", r.id), { reply: text, status: "answered", repliedBy: ctx.profile.name || "Dispatch", repliedAt: serverTimestamp() }), "Reply sent");
-      } }, input("reply", { placeholder: "Reply to the carrier…", "aria-label": "Reply" }), btn("Send", null, "dark", { type: "submit" }));
+        const ok = await guard(() => updateDoc(doc(db, "requests", r.id), { reply: text, status: "answered", repliedBy: ctx.profile.name || "Dispatch", repliedAt: serverTimestamp() }), "Reply sent");
+        if (ok !== null) drafts.delete(r.id);
+      } }, replyIn, btn("Send", null, "dark", { type: "submit" }));
       return h("div", { class: "row col" },
         h("div", { class: "row-top" },
           h("div", { class: "strong" }, [ctx.carrierName(r.carrierId), r.truckUnit].filter(Boolean).join(" · ")),
@@ -154,22 +169,34 @@ export function requestsList(ctx, carrierIds, { staff, onCount } = {}) {
         h("div", { class: "quote" }, r.text),
         r.reply ? h("div", { class: "reply" }, h("span", { class: "strong small" }, (r.repliedBy || "Dispatch") + ": "), r.reply) : null,
         staff && r.status !== "answered" ? replyBox : null);
-    })) : h("p", { class: "empty" }, "No requests yet."));
-  }));
+    }), moreButton(reqs.length, limit, () => { limit += 25; draw(last); })) : h("p", { class: "empty" }, "No requests yet."));
+    if (refocus) { refocus.focus(); refocus.setSelectionRange(refocus.value.length, refocus.value.length); }
+  };
+  ctx.sub(watchMany(scoped(ctx, "requests", carrierIds), draw));
   return card("Truck requests", null, body);
+}
+
+export function moreButton(total, shown, onMore) {
+  if (total <= shown) return null;
+  return h("div", { class: "more" }, h("span", { class: "muted small" }, `Showing ${shown} of ${total}`), btn("Show more", onMore, "ghost"));
 }
 
 // ---------- Loads ----------
 
 // opts: { showMoney, editable, title }
 export function loadsTable(ctx, carrierIds, opts = {}) {
-  let loads = [], moneyRows = new Map(), filter = "all";
+  let loads = [], moneyRows = new Map(), filter = "all", search = "", limit = 100;
   const body = h("div");
+  const searchIn = input("q", { type: "search", placeholder: "Search lane, driver, truck, load #…", "aria-label": "Search loads" });
+  searchIn.addEventListener("input", () => { search = searchIn.value.trim().toLowerCase(); limit = 100; draw(); });
   const chips = h("div", { class: "chips", role: "group", "aria-label": "Filter loads" });
   const draw = () => {
     chips.replaceChildren(...[["all", "All"], ["booked", "Booked"], ["in_transit", "In transit"], ["delivered", "Delivered"]].map(([v, l]) =>
-      h("button", { type: "button", class: "chip" + (filter === v ? " on" : ""), "aria-pressed": String(filter === v), onClick: () => { filter = v; draw(); } }, l)));
-    const shown = loads.filter((l) => filter === "all" || l.status === filter).sort(byNewest);
+      h("button", { type: "button", class: "chip" + (filter === v ? " on" : ""), "aria-pressed": String(filter === v), onClick: () => { filter = v; limit = 100; draw(); } }, l)));
+    const matches = loads.filter((l) => (filter === "all" || l.status === filter) &&
+      (!search || [shortId(l.id), lane(l), l.driverName, l.truckUnit, ctx.carrierName(l.carrierId), l.dispatcherName].filter(Boolean).join(" ").toLowerCase().includes(search)))
+      .sort(byNewest);
+    const shown = matches.slice(0, limit);
     const cols = [
       { label: "Load", cell: (l) => h("span", { class: "mono" }, shortId(l.id)) },
       { label: "Carrier", cell: (l) => h("span", { class: "strong" }, ctx.carrierName(l.carrierId)) },
@@ -194,12 +221,16 @@ export function loadsTable(ctx, carrierIds, opts = {}) {
       ? h("select", { class: "input input-sm", "aria-label": "Status for load " + shortId(l.id), onChange: (e) => guard(() => updateDoc(doc(db, "loads", l.id), { status: e.target.value, updatedAt: serverTimestamp() })) },
           LOAD_STATUSES.map((s) => h("option", { value: s.value, selected: s.value === l.status }, s.label)))
       : pill(l.status) });
-    body.replaceChildren(table(cols, shown, "No loads yet."));
+    body.replaceChildren(table(cols, shown, search ? "No loads match that search." : "No loads yet."),
+      moreButton(matches.length, limit, () => { limit += 100; draw(); }));
   };
-  ctx.sub(watchMany(perCarrier("loads", carrierIds), (r) => { loads = r; opts.onLoads && opts.onLoads(r); draw(); }));
-  if (opts.showMoney) ctx.sub(watchMany(perCarrier("loadMoney", carrierIds), (r) => { moneyRows = new Map(r.map((m) => [m.id, m])); opts.onMoney && opts.onMoney(r); draw(); }));
+  let pending = null;
+  const soon = () => { if (!pending) pending = setTimeout(() => { pending = null; draw(); }, 50); };
+  ctx.sub(watchMany(scoped(ctx, "loads", carrierIds), (r) => { loads = r; opts.onLoads && opts.onLoads(r); soon(); }));
+  if (opts.showMoney) ctx.sub(watchMany(scoped(ctx, "loadMoney", carrierIds), (r) => { moneyRows = new Map(r.map((m) => [m.id, m])); opts.onMoney && opts.onMoney(r); soon(); }));
+  ctx.sub(() => clearTimeout(pending));
   draw();
-  return card(opts.title || "Load board", chips, body);
+  return card(opts.title || "Load board", chips, searchIn, body);
 }
 
 // Dispatcher/owner: book a new load for any carrier they work.

@@ -63,6 +63,7 @@ function people(ctx, root) {
   const inviteSlot = h("div");
   const driversBody = h("div");
   const trucksBody = h("div");
+  const openEdits = new Set(); // keep a driver's edit form open through live updates
 
   const drawDrivers = (drivers) => driversBody.replaceChildren(drivers.length ? h("div", { class: "list" }, drivers.map((d) => {
     const typeSel = select("payType", [
@@ -70,7 +71,7 @@ function people(ctx, root) {
       { value: "percent", label: "% of load", selected: d.payType === "percent" },
       { value: "flat", label: "Flat per load", selected: d.payType === "flat" }]);
     const truckSel = select("truckId", [{ value: "", label: "No truck" }, ...trucks.map((t) => ({ value: t.id, label: t.unit, selected: t.id === d.truckId }))]);
-    const edit = h("form", { class: "inline-form", hidden: true, onSubmit: async (e) => {
+    const edit = h("form", { class: "inline-form", hidden: !openEdits.has(d.id), onSubmit: async (e) => {
       e.preventDefault();
       const f = formToObj(edit);
       const t = trucks.find((x) => x.id === f.truckId);
@@ -82,7 +83,7 @@ function people(ctx, root) {
       h("div", { class: "row-top" },
         h("div", null, h("div", { class: "strong" }, d.name || d.email), h("div", { class: "muted small" }, [d.truckUnit, payText(d)].filter(Boolean).join(" · "))),
         h("div", { class: "row-meta" },
-          btn("Edit", () => (edit.hidden = !edit.hidden)),
+          btn("Edit", () => { edit.hidden = !edit.hidden; edit.hidden ? openEdits.delete(d.id) : openEdits.add(d.id); }),
           btn("Remove", async () => {
             if (!confirm(`Remove ${d.name || d.email}? They lose access to your company right away.`)) return;
             await guard(() => deleteDoc(doc(db, "users", d.id)), "Driver removed");

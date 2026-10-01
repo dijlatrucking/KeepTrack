@@ -1,6 +1,6 @@
 import { db, collection, query, where } from "../fb.js";
 import { h, stat } from "../ui.js";
-import { watchMany, perCarrier } from "../data.js";
+import { watchMany, scoped } from "../data.js";
 import { loadsTable, loadForm, docsReviewQueue, requestsList } from "../components.js";
 
 const ids = (ctx) => ctx.carriers.map((c) => c.id);
@@ -18,7 +18,7 @@ function tasks(ctx, root) {
       stat("Open truck requests", String(counts.reqs)),
       stat("Active loads", String(busy.size)));
   };
-  ctx.sub(watchMany(perCarrier("trucks", ids(ctx)), (r) => { trucks = r; draw(); }));
+  ctx.sub(watchMany(scoped(ctx, "trucks", ids(ctx)), (r) => { trucks = r; draw(); }));
   draw();
   root.append(
     h("p", { class: "muted" }, ctx.carriers.length ? `Your carriers: ${ctx.carriers.map((c) => c.name).join(", ")}` : "No carriers assigned yet. Ask the owner to give you access."),

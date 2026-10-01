@@ -16,6 +16,7 @@ function accessRequests(ctx, { hideWhenEmpty } = {}) {
   const body = h("div");
   const box = card("Access requests", null, body);
   box.classList.add("card-alert");
+  const drafts = new Map(); // fee % and company picks survive live updates
   ctx.sub(watch(query(collection(db, "users"), where("role", "==", "pending")), (reqs) => {
     reqs.sort(byNewest);
     box.hidden = !!hideWhenEmpty && !reqs.length;
@@ -25,7 +26,12 @@ function accessRequests(ctx, { hideWhenEmpty } = {}) {
         { value: "__new", label: `New carrier: ${u.company || u.name}` },
         ...ctx.carriers.map((c) => ({ value: c.id, label: `Add to existing: ${c.name}` }))]);
       const feeIn = input("fee", { type: "number", step: "0.1", min: "0", max: "100", placeholder: "e.g. 8" });
-      carrierSel.addEventListener("change", () => (feeIn.closest("label").hidden = carrierSel.value !== "__new"));
+      const draft = drafts.get(u.id) || {};
+      if (draft.carrier) carrierSel.value = draft.carrier;
+      if (draft.fee) feeIn.value = draft.fee;
+      const save = () => drafts.set(u.id, { carrier: carrierSel.value, fee: feeIn.value });
+      feeIn.addEventListener("input", save);
+      carrierSel.addEventListener("change", () => { save(); feeIn.closest("label").hidden = carrierSel.value !== "__new"; });
 
       const approve = async () => {
         const batch = writeBatch(db);
@@ -45,7 +51,7 @@ function accessRequests(ctx, { hideWhenEmpty } = {}) {
         if (isCarrier && carrierSel.value === "__new") ctx.reload();
       };
 
-      return h("div", { class: "row col" },
+      const row = h("div", { class: "row col" },
         h("div", { class: "row-top" },
           h("div", null,
             h("div", { class: "strong" }, isCarrier ? (u.company || "Carrier") + " · " + u.name : u.name),
@@ -62,6 +68,8 @@ function accessRequests(ctx, { hideWhenEmpty } = {}) {
           btn(isCarrier ? "Approve carrier" : "Approve dispatcher", () => guard(approve, "Approved"), "ok"),
           btn("Deny", () => confirm(`Deny ${u.name}? They won't get access.`) && guard(() => deleteDoc(doc(db, "users", u.id)), "Request denied"), "ghost")),
         !isCarrier ? h("p", { class: "muted small" }, "After approving, give them carriers under Team.") : null);
+      if (isCarrier && carrierSel.value !== "__new") queueMicrotask(() => { const l = feeIn.closest("label"); if (l) l.hidden = true; });
+      return row;
     })) : h("p", { class: "empty" }, "No one waiting."));
   }));
   return box;
