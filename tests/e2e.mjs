@@ -107,10 +107,17 @@ const driveServer = http.createServer(async (req, res) => {
   }
   if (b.remove) {
     const meta = await fsGet("documents/" + b.docId, b.idToken);
-    if (!meta || meta.status !== "rejected") return send({ ok: false, error: "only rejected documents are removed" });
+    if (!meta) return send({ ok: false, error: "no access to that document" });
+    if (meta.status !== "rejected") {
+      if (!b.deleting) return send({ ok: false, error: "only rejected documents are removed" });
+      const me = (await fsGet("users/" + uid, b.idToken)) || {};
+      const may = me.role === "owner" || (me.role === "carrierAdmin" && me.carrierId === meta.carrierId)
+        || (me.role === "driver" && me.carrierId === meta.carrierId && meta.uploadedBy === uid && meta.status === "pending");
+      if (!may) { driveCalls.push({ docId: b.docId, ok: false, deleting: true }); return send({ ok: false, error: "you can't delete that paper" }); }
+    }
     let n = 0;
     driveFiles.forEach((f) => { if (f.docId === b.docId && !f.trashed) { f.trashed = true; n++; } });
-    driveCalls.push({ docId: b.docId, ok: true, removed: n });
+    driveCalls.push({ docId: b.docId, ok: true, removed: n, deleting: !!b.deleting });
     return send({ ok: true, removed: n });
   }
   const r = await copyOne(b.docId, b.idToken);
@@ -891,6 +898,115 @@ await run("Rinse and repeat: a new scan after freeing is counted, backed up and 
   await card.getByRole("button", { name: "Free up space" }).click();
   await toast(owner, /Freed about .* \(1 scan\)/);
   if ((await adminDocs("docFiles")).length) throw new Error("The new scan is still in the database");
+});
+
+// ---------- 7c. Editing and deleting papers and loads that are already backed up ----------
+const waitFor = async (fn, what, ms = 15000) => { const t0 = Date.now(); while (!(await fn())) { if (Date.now() - t0 > ms) throw new Error(what); await new Promise((r) => setTimeout(r, 200)); } };
+
+await run("Owner edits a paper that only lives in Drive now: the record changes and its Drive copy is re-filed", async () => {
+  const w9 = (await adminDocs("documents")).find((d) => d.name === "W-9 Test Carrier A");
+  if (!w9 || !w9.fileFreed) throw new Error("Expected the W-9 to be moved to Drive already");
+  await nav(owner, "Documents");
+  const calls = driveCalls.length;
+  await owner.locator("tr", { hasText: "W-9 Test Carrier A" }).first().getByRole("button", { name: "Edit" }).click();
+  const dlg = owner.locator("dialog[open]");
+  await dlg.getByLabel("Name").fill("W-9 2026 Test Carrier A");
+  await dlg.getByRole("button", { name: "Save", exact: true }).click();
+  await toast(owner, "Paper saved");
+  await waitFor(async () => (await adminDocs("documents")).find((d) => d.id === w9.id)?.name === "W-9 2026 Test Carrier A", "Name didn't change");
+  await waitFor(() => driveCalls.slice(calls).some((c) => c.docId === w9.id && c.ok), "Drive copy wasn't re-filed");
+  await owner.locator("tr", { hasText: "W-9 2026 Test Carrier A" }).first().getByText("In Drive only").waitFor();
+});
+
+await run("Carrier fixes a lumper's amount and the expense made from it follows", async () => {
+  const lumper = (await adminDocs("documents")).find((d) => d.kind === "Lumper" && d.expenseId);
+  await nav(carrier, "Documents");
+  const vault = carrier.locator(".card", { hasText: "Document vault" });
+  await vault.locator(".row", { hasText: "Lumper receipt" }).first().getByRole("button", { name: "Edit" }).click();
+  const dlg = carrier.locator("dialog[open]");
+  await dlg.getByLabel("Amount ($)").fill("95");
+  await dlg.getByRole("button", { name: "Save", exact: true }).click();
+  await toast(carrier, "Paper saved");
+  await waitFor(async () => (await adminDocs("expenses")).find((e) => e.id === lumper.expenseId)?.amount === 95, "Expense amount didn't follow");
+  if ((await adminDocs("documents")).find((d) => d.id === lumper.id).amount !== 95) throw new Error("Paper amount didn't change");
+});
+
+await run("Owner edits a load's broker #: its papers are re-filed in Drive", async () => {
+  const L = (await adminDocs("loads")).find((l) => l.destination === "Denver, CO");
+  const papers = (await adminDocs("documents")).filter((d) => d.loadId === L.id && !d.fileCleared && d.status !== "rejected");
+  if (!papers.length) throw new Error("Expected papers on the load");
+  const calls = driveCalls.length;
+  await nav(owner, "Loads");
+  await owner.locator(".item", { hasText: "Boise, ID → Denver, CO" }).first().getByRole("button", { name: "Edit", exact: true }).click();
+  const F = owner.locator(".form-card");
+  await F.getByLabel("Load #").fill("4471999");
+  await F.getByRole("button", { name: "Save changes" }).click();
+  await toast(owner, "Load saved");
+  await waitFor(() => papers.every((d) => driveCalls.slice(calls).some((c) => c.docId === d.id && c.ok)), "Not every paper on the load was re-filed");
+  if ((await adminDocs("loads")).find((l) => l.id === L.id).loadNo !== "4471999") throw new Error("Load # didn't save");
+});
+
+await run("Driver takes back a wrong upload before it's reviewed (and its Drive copy goes too)", async () => {
+  await nav(driver, "Loads");
+  const R = driver.locator(".card", { hasText: "Lumpers, repairs, tolls" });
+  await R.getByLabel("Type").selectOption("Tolls");
+  await R.getByLabel("Amount ($)").fill("12");
+  await R.locator('input[data-role="camera"]').setInputFiles({ name: "toll.png", mimeType: "image/png", buffer: noisyPng(600, 800) });
+  await R.locator(".scan-item").first().waitFor();
+  await R.getByRole("button", { name: "Send receipt" }).click();
+  await toast(driver, "Receipt sent to dispatch");
+  const toll = await (async () => { let d; await waitFor(async () => (d = (await adminDocs("documents")).find((x) => x.name === "Tolls receipt · $12.00")), "Toll receipt not saved"); return d; })();
+  await waitFor(() => driveFiles.has("file_" + toll.id), "Toll receipt not copied to Drive");
+  await nav(driver, "My uploads");
+  driver.once("dialog", (dl) => dl.accept());
+  await driver.locator(".row", { hasText: "Tolls receipt" }).filter({ hasText: "Waiting for review" }).first().getByRole("button", { name: "Delete" }).click();
+  await toast(driver, "Paper deleted");
+  if ((await adminDocs("documents")).some((d) => d.id === toll.id)) throw new Error("Record still there");
+  if ((await adminDocs("docFiles")).some((d) => d.id === toll.id)) throw new Error("Scan still there");
+  if (!driveFiles.get("file_" + toll.id).trashed) throw new Error("Drive copy not trashed");
+  // approved papers can't be deleted by the driver
+  if (await driver.locator(".row", { hasText: "Approved" }).getByRole("button", { name: "Delete" }).count()) throw new Error("Driver can delete approved papers");
+  await nav(driver, "Loads");
+});
+
+await run("Carrier deletes a paper that only lives in Drive: record and Drive copy both go, storage count drops", async () => {
+  const reg = (await adminDocs("documents")).find((d) => d.name === "Registration Unit 7");
+  await nav(carrier, "Documents");
+  carrier.once("dialog", (dl) => dl.accept());
+  await carrier.locator(".card", { hasText: "Document vault" }).locator(".row", { hasText: "Registration Unit 7" }).first().getByRole("button", { name: "Delete" }).click();
+  await toast(carrier, "Paper deleted");
+  if ((await adminDocs("documents")).some((d) => d.id === reg.id)) throw new Error("Record still there");
+  if (!driveFiles.get(reg.driveFileId)?.trashed) throw new Error("Drive copy not trashed");
+});
+
+await run("Carrier deletes a load they booked, keeping its papers; they can't delete a dispatched load", async () => {
+  await nav(carrier, "Loads");
+  if (await carrier.locator(".item", { hasText: "Boise, ID → Denver, CO" }).first().getByRole("button", { name: "Delete" }).count()) throw new Error("Carrier can delete a dispatched load");
+  await carrier.getByRole("button", { name: "+ New load" }).click();
+  const F = carrier.locator(".form-card");
+  await F.getByLabel("Pickup (City, ST)").fill("Nampa, ID");
+  await F.getByLabel("Delivery (City, ST)").fill("Ogden, UT");
+  await F.getByLabel("Rate ($)").fill("500");
+  await F.getByRole("button", { name: "Save load", exact: true }).click();
+  await toast(carrier, "Load booked");
+  const item = carrier.locator(".item", { hasText: "Nampa, ID → Ogden, UT" }).first();
+  await item.getByRole("button", { name: /Scan paperwork/ }).click();
+  const dlg = carrier.locator("dialog[open]");
+  await dlg.locator('input[data-role="choose"]').setInputFiles({ name: "bol.png", mimeType: "image/png", buffer: noisyPng(500, 700) });
+  await dlg.locator(".scan-item").first().waitFor();
+  await dlg.getByRole("button", { name: "Save", exact: true }).click();
+  await toast(carrier, "Paperwork saved");
+  const L = (await adminDocs("loads")).find((l) => l.destination === "Ogden, UT");
+  let paper;
+  await waitFor(async () => (paper = (await adminDocs("documents")).find((d) => d.loadId === L.id)), "Paper not saved on the load");
+  await item.getByRole("button", { name: "Delete" }).click();
+  await carrier.locator("dialog[open]").getByRole("button", { name: "Delete load, keep the papers" }).click();
+  await toast(carrier, "Load deleted");
+  await waitFor(async () => !(await adminDocs("loads")).some((l) => l.id === L.id), "Load still there");
+  if ((await adminDocs("loadMoney")).some((m) => m.id === L.id)) throw new Error("Load money record left behind");
+  const kept = (await adminDocs("documents")).find((d) => d.id === paper.id);
+  if (!kept || kept.loadId) throw new Error("Paper should be kept and unlinked");
+  await nav(carrier, "Summary");
 });
 
 // ---------- 8. Phone layout ----------

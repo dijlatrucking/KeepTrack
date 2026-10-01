@@ -104,7 +104,9 @@ service cloud.firestore {
         || (isDriverIn(resource.data.carrierId) && resource.data.driverId == request.auth.uid
             && onlyChanges(['status', 'updatedAt'])
             && request.resource.data.status in ['in_transit', 'delivered']);
-      allow delete: if isOwner();
+      // carrier admins may delete loads they booked themselves (never one dispatch booked)
+      allow delete: if isOwner()
+        || (isCarrierAdmin(resource.data.carrierId) && resource.data.get('dispatcherId', null) == null);
     }
 
     match /loadMoney/{id} {
@@ -117,7 +119,8 @@ service cloud.firestore {
         || (isCarrierAdmin(resource.data.carrierId) && keepsCarrier()
             && (onlyChanges(['factored', 'deposit'])
                 || (resource.data.get('fee', 0) == 0 && onlyChanges(['rate', 'factored', 'deposit']))));
-      allow delete: if isOwner();
+      allow delete: if isOwner()
+        || (isCarrierAdmin(resource.data.carrierId) && resource.data.get('fee', 0) == 0);
     }
 
     // Carrier bookkeeping: expenses and recurring charges. Owner + that carrier's admin only.
@@ -145,14 +148,23 @@ service cloud.firestore {
            (isDriverIn(request.resource.data.carrierId) && request.resource.data.status == 'pending')
         || (isCarrierAdmin(request.resource.data.carrierId) && request.resource.data.status == 'filed')
         || staff(request.resource.data.carrierId));
-      allow update: if (staff(resource.data.carrierId) && keepsCarrier())
-        || (isCarrierAdmin(resource.data.carrierId) && resource.data.status == 'filed'
-            && onlyChanges(['name', 'category', 'tags', 'expiresAt']))
+      // A paper can only be moved to one of the same carrier's loads.
+      function loadFits() {
+        return !request.resource.data.diff(resource.data).affectedKeys().hasAny(['loadId'])
+          || request.resource.data.get('loadId', null) == null
+          || get(/databases/$(database)/documents/loads/$(request.resource.data.loadId)).data.carrierId == resource.data.carrierId;
+      }
+      allow update: if (staff(resource.data.carrierId) && keepsCarrier() && loadFits())
+        // carrier admins fix the details of their company's papers (type, name, load, amount, note, tags, expiry)
+        || (isCarrierAdmin(resource.data.carrierId) && keepsCarrier() && loadFits()
+            && onlyChanges(['name', 'category', 'kind', 'tags', 'expiresAt', 'note', 'amount', 'receiptType', 'loadId', 'loadLabel']))
         || (isCarrierAdmin(resource.data.carrierId) && resource.data.status == 'pending'
             && request.resource.data.status in ['approved', 'rejected']
             && onlyChanges(['status', 'rejectReason', 'reviewedBy', 'reviewedAt', 'expenseId', 'amount']));
+      // owner: anything; carrier admin: their company's papers; driver: their own upload before it's reviewed
       allow delete: if isOwner()
-        || (isCarrierAdmin(resource.data.carrierId) && resource.data.status == 'filed');
+        || isCarrierAdmin(resource.data.carrierId)
+        || (isDriverIn(resource.data.carrierId) && resource.data.uploadedBy == request.auth.uid && resource.data.status == 'pending');
     }
 
     // The scan itself (a shrunk image or small PDF), stored beside its /documents record with the same id.
@@ -167,7 +179,12 @@ service cloud.firestore {
         && request.resource.data.uploadedBy == request.auth.uid
         && getAfter(/databases/$(database)/documents/documents/$(id)).data.uploadedBy == request.auth.uid
         && getAfter(/databases/$(database)/documents/documents/$(id)).data.carrierId == request.resource.data.carrierId;
-      allow delete: if isOwner();
+      // The owner may remove a scan on its own (after it's safely in Drive). Everyone else only deletes it
+      // together with its /documents record, and only if they may delete that record.
+      allow delete: if isOwner() || (hasProfile()
+        && !existsAfter(/databases/$(database)/documents/documents/$(id))
+        && (isCarrierAdmin(docMeta().carrierId)
+            || (isDriverIn(docMeta().carrierId) && docMeta().uploadedBy == request.auth.uid && docMeta().status == 'pending')));
     }
 
     match /requests/{id} {

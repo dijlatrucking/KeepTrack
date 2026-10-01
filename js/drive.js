@@ -50,10 +50,11 @@ export async function sendToDrive(docId, { quiet = false } = {}) {
 
 // A rejected duplicate (or bad photo) is moved to the Drive trash too, so the folders stay clean.
 // The script only does this for documents that really are marked rejected.
-export async function removeFromDrive(docId) {
+// A paper being deleted (by someone allowed to delete it) goes to the Drive trash the same way.
+export async function removeFromDrive(docId, { deleting = false } = {}) {
   const url = await driveUrl();
   if (!url || !auth.currentUser) return null;
-  try { return await post(url, { idToken: await auth.currentUser.getIdToken(), docId, remove: true }); }
+  try { return await post(url, { idToken: await auth.currentUser.getIdToken(), docId, remove: true, ...(deleting ? { deleting: true } : {}) }); }
   catch (e) { console.warn("Drive remove failed", e); return null; }
 }
 

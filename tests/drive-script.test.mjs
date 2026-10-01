@@ -283,6 +283,30 @@ check("A freed scan with no copy in Drive reports 'not found' and leaves no empt
   if (folders.size > before + 0 && [...folders.values()].some((f) => f.name.startsWith("Dec 05"))) throw new Error("empty load folder made");
 });
 
+check("Deleting a paper trashes its Drive copy, but only for people allowed to delete it", () => {
+  put("users/admA", { role: "carrierAdmin", carrierId: "A" });
+  put("users/admB", { role: "carrierAdmin", carrierId: "B" });
+  users["tok-adminA"] = "admA"; users["tok-adminB"] = "admB";
+  // an approved rate con: dispatch and another carrier's admin can't; this carrier's admin can
+  eq(call({ idToken: "tok-disp", docId: "docRCabcdefghijklmno", remove: true, deleting: true }).ok, false, "dispatcher refused");
+  eq(call({ idToken: "tok-adminB", docId: "docRCabcdefghijklmno", remove: true, deleting: true }).ok, false, "other carrier refused");
+  const r = call({ idToken: "tok-adminA", docId: "docRCabcdefghijklmno", remove: true, deleting: true });
+  eq(r.ok, true, "carrier admin allowed");
+  eq(fileFor("docRCabcdefghijklmno"), undefined, "rate con copy trashed");
+  // a driver can take back their own paper only while it's waiting for review
+  put("documents/docLUMPabcdefghijklm", { ...db["documents/docLUMPabcdefghijklm"], uploadedBy: "drv1" });
+  put("documents/docFUELabcdefghijklm", { ...db["documents/docFUELabcdefghijklm"], uploadedBy: "drv1" });
+  eq(call({ idToken: "tok-disp", docId: "docLUMPabcdefghijklm", remove: true, deleting: true }).ok, false, "someone else's pending paper refused");
+  eq(call({ idToken: "tok-driver", docId: "docLUMPabcdefghijklm", remove: true, deleting: true }).ok, true, "own pending lumper");
+  put("documents/docFUELabcdefghijklm", { ...db["documents/docFUELabcdefghijklm"], status: "approved" });
+  eq(call({ idToken: "tok-driver", docId: "docFUELabcdefghijklm", remove: true, deleting: true }).ok, false, "approved receipt refused");
+  eq(fileFor("docFUELabcdefghijklm") !== undefined, true, "approved receipt kept");
+  // the owner can delete anything
+  eq(call({ idToken: "tok-owner", docId: "docFUELabcdefghijklm", remove: true, deleting: true }).ok, true, "owner");
+  // without "deleting", only rejected papers are removed (unchanged)
+  eq(call({ idToken: "tok-owner", docId: "docINSabcdefghijklmn", remove: true }).ok, false, "plain remove still needs rejected");
+});
+
 check("Bad sign-ins are refused", () => {
   eq(call({ idToken: "forged", docId: "docBOL1abcdefghijklm" }).ok, false, "forged token");
   eq(call({ docId: "docBOL1abcdefghijklm" }).ok, false, "no token");

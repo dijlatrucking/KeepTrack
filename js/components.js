@@ -197,18 +197,23 @@ export async function saveScans(ctx, files, meta) {
 export function openScanDialog(ctx, load) {
   const scans = scanPicker("Pages");
   const kindSel = select("kind", DOC_KINDS.slice(0, 5));
-  const dlg = h("dialog", { class: "dialog", "aria-label": "Add paperwork" });
+  const dlg = h("dialog", { class: "dialog", "aria-label": "Paperwork" });
   const close = () => { dlg.close(); dlg.remove(); };
+  const papersSlot = h("div");
+  import("./editing.js").then((m) => papersSlot.replaceChildren(m.loadPapers(ctx, load)));
   const form = h("form", { class: "stack", onSubmit: async (e) => {
     e.preventDefault();
     if (!scans.files().length) return toast("Scan or choose at least one page.", "bad");
     const ok = await guard(() => saveScans(ctx, scans.files(), {
-      carrierId: load.carrierId, loadId: load.id, loadLabel: `${shortId(load.id)} ${lane(load)}`, kind: kindSel.value, status: "approved",
+      carrierId: load.carrierId, loadId: load.id, loadLabel: `${shortId(load.id)} ${lane(load)}`, kind: kindSel.value,
+      status: ctx.profile.role === "carrierAdmin" ? "filed" : "approved",
     }), "Paperwork saved");
     if (ok !== null) close();
   } },
-    h("h2", null, "Add paperwork"),
+    h("h2", null, "Paperwork"),
     h("p", { class: "muted small" }, `${shortId(load.id)} · ${lane(load)} · ${ctx.carrierName(load.carrierId)}`),
+    papersSlot,
+    h("div", { class: "muted small upper" }, "Add paperwork"),
     field("Type", kindSel),
     scans.el,
     h("div", { class: "row-inline" }, btn("Save", null, "primary", { type: "submit" }), btn("Cancel", close, "ghost")));
@@ -375,6 +380,7 @@ export function docsReviewQueue(ctx, carrierIds, onCount) {
         flag,
         h("div", { class: "acts" },
           btn("View", () => openDoc(d)),
+          btn("Edit", () => import("./editing.js").then((m) => m.editDocDialog(ctx, d)), "ghost"),
           canExpense && isReceiptDoc(d) ? btn("Approve + add expense", () => guard(() => receiptToExpense(ctx, d), "Approved and added to expenses"), "ok") : null,
           btn("Approve", () => guard(() => updateDoc(doc(db, "documents", d.id), { status: "approved", reviewedBy: ctx.uid, reviewedAt: serverTimestamp() }), "Approved"), canExpense && isReceiptDoc(d) ? "ghost" : "ok"),
           dupBtn,

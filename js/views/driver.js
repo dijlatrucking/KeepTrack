@@ -7,7 +7,7 @@ const mine = (ctx, coll, field) => query(collection(db, coll), where("carrierId"
 
 // One of the driver's own uploads: what it is, where it stands, and a button to look at it again.
 const DRIVER_STATUS = { pending: "Waiting for review", approved: "Approved", rejected: "Not accepted", filed: "Filed" };
-function uploadRow(d, { showLoad = true } = {}) {
+function uploadRow(ctx, d, { showLoad = true } = {}) {
   const why = d.status === "rejected"
     ? (d.rejectReason === "duplicate" ? "Not accepted: this was already on file, so it's not needed twice." : "Not accepted. Send a clearer photo if dispatch asks for one.")
     : null;
@@ -19,7 +19,8 @@ function uploadRow(d, { showLoad = true } = {}) {
           h("div", { class: "strong" }, d.name || d.kind || "Document"),
           h("div", { class: "muted small" }, [showLoad ? d.loadLabel : null, d.amount ? money(d.amount) : null, ago(d.createdAt)].filter(Boolean).join(" · ")),
           d.note ? h("div", { class: "small" }, d.note) : null)),
-      h("div", { class: "row-meta" }, pill(d.status, DRIVER_STATUS[d.status]), btn("View", () => openDoc(d)))),
+      h("div", { class: "row-meta" }, pill(d.status, DRIVER_STATUS[d.status]), btn("View", () => openDoc(d)),
+        d.status === "pending" ? btn("Delete", () => import("../editing.js").then((m) => m.deleteDocFlow(ctx, d)), "ghost", { class: "btn btn-ghost btn-sm danger" }) : null)),
     why ? h("div", { class: "small muted" }, why) : null);
 }
 
@@ -84,7 +85,7 @@ function home(ctx, root) {
   const sentBoxes = new Map();
   const drawSent = () => sentBoxes.forEach((box, loadId) => {
     const docs = myDocs.filter((d) => d.loadId === loadId).sort(byNewest);
-    box.replaceChildren(...(docs.length ? [h("div", { class: "muted small upper" }, "Sent for this load"), h("div", { class: "list" }, docs.map((d) => uploadRow(d, { showLoad: false })))] : []));
+    box.replaceChildren(...(docs.length ? [h("div", { class: "muted small upper" }, "Sent for this load"), h("div", { class: "list" }, docs.map((d) => uploadRow(ctx, d, { showLoad: false })))] : []));
   });
   ctx.sub(watch(mine(ctx, "documents", "uploadedBy"), (docs) => { myDocs = docs; drawSent(); }));
   ctx.sub(watch(mine(ctx, "loads", "driverId"), (loads) => {
@@ -134,7 +135,7 @@ function uploads(ctx, root) {
       && (!t || [d.name, d.kind, d.receiptType, d.loadLabel, d.note, d.amount ? String(d.amount) : ""].filter(Boolean).join(" ").toLowerCase().includes(t)))
       .sort(byNewest);
     body.replaceChildren(shown.length
-      ? h("div", { class: "list" }, shown.slice(0, limit).map((d) => uploadRow(d)), moreButton(shown.length, limit, () => { limit += 50; draw(); }))
+      ? h("div", { class: "list" }, shown.slice(0, limit).map((d) => uploadRow(ctx, d)), moreButton(shown.length, limit, () => { limit += 50; draw(); }))
       : h("p", { class: "empty" }, docs.length ? "Nothing matches." : "Nothing uploaded yet. Photos you send from the Loads page show up here."));
   };
   const search = input("q", { type: "search", placeholder: "Search: BOL, lumper, load #…", "aria-label": "Search my uploads" });

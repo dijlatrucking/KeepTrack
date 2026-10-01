@@ -5,6 +5,7 @@ import { loadsTable, docsReviewQueue, requestsList, showInvite, staffScanCard, o
 import { pickerPage, summaryView, loadsView, expensesView, taxView, carrierSettingsCard } from "../ops.js";
 import { driveUrl, forgetDriveUrl, pingDrive, sendToDrive } from "../drive.js";
 import { storageCard, storageAlert } from "../storage.js";
+import { docActions } from "../editing.js";
 import { people as carrierPeople, paystubs as carrierPaystubs } from "./carrier.js";
 
 const allIds = (ctx) => ctx.carriers.map((c) => c.id);
@@ -187,7 +188,7 @@ function docsView(ctx, root) {
       { label: "Carrier", cell: (d) => ctx.carrierName(d.carrierId) },
       { label: "From", cell: (d) => d.uploaderName || "—" },
       { label: "Status", cell: (d) => pill(d.status) },
-      { label: "", cell: (d) => h("div", { class: "row-meta" }, btn("View", () => openDoc(d)),
+      { label: "", cell: (d) => h("div", { class: "row-meta" }, btn("View", () => openDoc(d)), ...docActions(ctx, d),
         d.driveUrl ? h("a", { href: d.driveUrl, target: "_blank", rel: "noopener", class: "btn btn-ghost" }, "In Drive")
           : d.fileFreed || d.fileCleared ? null
           : btn("To Drive", async () => { const j = await sendToDrive(d.id, { quiet: true }); toast(j ? `Copied to Drive: ${j.folder}` : "Couldn't reach Google Drive. Check Settings.", j ? "ok" : "bad"); }, "ghost")) },

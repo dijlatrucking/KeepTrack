@@ -405,6 +405,8 @@ function loadForm(ctx, st, ids, existing, onDone) {
         if (isStaff) mUpd.fee = Math.round(num(feeIn.value) * 100) / 100;
         if (isCarrier && num(m0.fee) > 0) delete mUpd.rate; // a dispatched load's rate is set by dispatch
         await updateDoc(doc(db, "loadMoney", id), mUpd);
+        // papers, expenses and Drive folders follow the load's new details (in the background)
+        import("./editing.js").then((m) => m.afterLoadEdit(ctx, existing, data)).catch((e) => console.warn(e));
       } else {
         const ref = await addDoc(collection(db, "loads"), {
           ...data, carrierId: cid, status: "booked", stageAt: today(), createdAt: serverTimestamp(),
@@ -532,7 +534,8 @@ export function loadsView(ctx, root, ids) {
         btn("Edit", () => openForm(l), "ghost", { class: "btn btn-ghost btn-sm" }),
         btn("Paperwork", () => openScanDialog(ctx, l), "ghost", { class: "btn btn-ghost btn-sm", "aria-label": "Scan paperwork for load " + shortId(l.id) }),
         l.status !== "cancelled" ? btn("Cancel load", () => confirm("Mark this load cancelled?") && setStage(l, "cancelled"), "ghost", { class: "btn btn-ghost btn-sm" }) : null,
-        isOwner ? btn("Delete", async () => { if (!confirm("Delete this load for good?")) return; await guard(async () => { await deleteDoc(doc(db, "loadMoney", l.id)); await deleteDoc(doc(db, "loads", l.id)); }, "Load deleted"); }, "ghost", { class: "btn btn-ghost btn-sm danger" }) : null));
+        isOwner || (role(ctx) === "carrierAdmin" && !l.dispatcherId)
+          ? btn("Delete", () => import("./editing.js").then((m) => m.deleteLoadFlow(ctx, l)), "ghost", { class: "btn btn-ghost btn-sm danger" }) : null));
   };
 
   // Loads report → PDF

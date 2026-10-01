@@ -43,6 +43,15 @@ await env.withSecurityRulesDisabled(async (c) => {
   await put("documents/D3", { carrierId: "B", uploadedBy: "drvB1", status: "pending", name: "BOL B" });
   await put("documents/D4", { carrierId: "A", uploadedBy: "adminA", status: "filed", name: "Insurance" });
   await put("documents/D5", { carrierId: "A", uploadedBy: "drvA2", status: "pending", name: "Lumper", kind: "Lumper", amount: 85 });
+  // for editing / deleting
+  await put("loads/L4", { carrierId: "A", status: "booked", dispatcherId: null, origin: "Nampa", destination: "Reno" });
+  await put("loadMoney/L4", { carrierId: "A", rate: 900, fee: 0, feePaid: false });
+  await put("loads/L5", { carrierId: "A", status: "booked", dispatcherId: "dispA", origin: "Boise", destination: "Denver" });
+  await put("loadMoney/L5", { carrierId: "A", rate: 2000, fee: 160, feePaid: false });
+  await put("documents/D6", { carrierId: "A", uploadedBy: "drvA1", status: "pending", name: "Wrong photo" });
+  await put("documents/D7", { carrierId: "A", uploadedBy: "drvA1", status: "approved", name: "POD", kind: "POD", loadId: "L1" });
+  await put("documents/D8", { carrierId: "A", uploadedBy: "dispA", status: "approved", name: "Rate con", kind: "Rate con", loadId: "L4" });
+  for (const id of ["D6", "D7", "D8"]) await put(`docFiles/${id}`, { carrierId: "A", uploadedBy: "x", data: "data:image/jpeg;base64,AAAA" });
   for (const d of ["D1", "D2", "D3", "D4"]) {
     const src = { D1: ["A", "drvA1"], D2: ["A", "drvA1"], D3: ["B", "drvB1"], D4: ["A", "adminA"] }[d];
     await put(`docFiles/${d}`, { carrierId: src[0], uploadedBy: src[1], data: "data:image/jpeg;base64,AAAA" });
@@ -326,8 +335,8 @@ await allow("owner reads any scan", () => getDoc(doc(o, "docFiles/D3")));
 await allow("owner counts every document for the storage meter", () => getCountFromServer(collection(o, "documents")));
 await allow("owner records a backup", () => setDoc(doc(o, "settings/backup"), { count: 3, sheetUrl: "https://docs.google.com/x" }));
 await deny("carrier admin fakes a backup record", () => setDoc(doc(a, "settings/backup"), { count: 0 }));
-await deny("driver deletes their own scan", () => deleteDoc(doc(d, "docFiles/D1")));
-await deny("carrier admin deletes a scan", () => deleteDoc(doc(a, "docFiles/D2")));
+await deny("driver deletes their own scan but keeps the record", () => deleteDoc(doc(d, "docFiles/D1")));
+await deny("carrier admin deletes a scan but keeps the record", () => deleteDoc(doc(a, "docFiles/D2")));
 await deny("dispatcher deletes an assigned scan", () => deleteDoc(doc(s, "docFiles/D1")));
 await deny("driver marks their own upload as moved to Drive", () => updateDoc(doc(d, "documents/D1"), { fileFreed: true, driveFileId: "x" }));
 await deny("carrier admin marks an approved scan as moved", () => updateDoc(doc(a, "documents/D2"), { fileFreed: true, size: 0 }));
@@ -338,6 +347,30 @@ await allow("owner frees a backed-up scan (deletes the scan, keeps the record)",
   return b.commit();
 });
 await allow("carrier B can still read the freed record", () => getDoc(doc(as("adminB"), "documents/D3")));
+
+// Editing and deleting papers and loads
+const delPaper = (db, id) => { const b = writeBatch(db); b.delete(doc(db, "docFiles/" + id)); b.delete(doc(db, "documents/" + id)); return b.commit(); };
+const delLoad = (db, id) => { const b = writeBatch(db); b.delete(doc(db, "loadMoney/" + id)); b.delete(doc(db, "loads/" + id)); return b.commit(); };
+await deny("driver deletes the scan of their pending upload but keeps the record", () => deleteDoc(doc(d, "docFiles/D6")));
+await deny("another driver deletes someone's pending upload", () => delPaper(as("drvA2"), "D6"));
+await deny("driver deletes their approved upload", () => delPaper(d, "D7"));
+await deny("dispatcher deletes a paper", () => delPaper(s, "D7"));
+await deny("carrier B admin deletes carrier A's paper", () => delPaper(as("adminB"), "D7"));
+await allow("driver takes back their own upload before it's reviewed (record + scan)", () => delPaper(d, "D6"));
+await allow("carrier admin fixes a paper's type, amount and note", () => updateDoc(doc(a, "documents/D7"), { kind: "Lumper", category: "Receipts", amount: 120, note: "fixed" }));
+await allow("carrier admin moves a paper to another of their loads", () => updateDoc(doc(a, "documents/D7"), { loadId: "L2", loadLabel: "#L2 ? to ?" }));
+await deny("carrier admin moves a paper onto carrier B's load", () => updateDoc(doc(a, "documents/D7"), { loadId: "L3", loadLabel: "#L3" }));
+await deny("dispatcher moves a paper onto another carrier's load", () => updateDoc(doc(s, "documents/D7"), { loadId: "L3" }));
+await deny("carrier admin changes a paper's status while editing", () => updateDoc(doc(a, "documents/D7"), { status: "filed", note: "x" }));
+await deny("carrier admin edits who uploaded a paper", () => updateDoc(doc(a, "documents/D7"), { uploaderName: "Someone" }));
+await allow("dispatcher fixes a paper's type", () => updateDoc(doc(s, "documents/D7"), { kind: "POD", category: "BOLs" }));
+await allow("carrier admin deletes their company's approved paper (record + scan)", () => delPaper(a, "D7"));
+await allow("carrier admin unlinks a paper from a load they're deleting", () => updateDoc(doc(a, "documents/D8"), { loadId: null, loadLabel: null }));
+await deny("carrier admin deletes a load dispatch booked (it carries the dispatch fee)", () => delLoad(a, "L5"));
+await deny("dispatcher deletes a load", () => delLoad(s, "L4"));
+await deny("driver deletes a load", () => delLoad(d, "L4"));
+await allow("carrier admin deletes a load they booked themselves", () => delLoad(a, "L4"));
+await allow("owner deletes a dispatched load", () => delLoad(o, "L5"));
 
 // ---------- Report ----------
 const failed = results.filter((r) => !r.ok);

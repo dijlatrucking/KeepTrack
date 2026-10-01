@@ -2,6 +2,7 @@ import { db, collection, doc, addDoc, setDoc, updateDoc, deleteDoc, query, where
 import { h, card, table, stat, money, num, field, input, select, btn, formToObj, guard, inviteCode, pill, fmtDate, ago, toDate, toast } from "../ui.js";
 import { watch, byNewest, driverPayFor } from "../data.js";
 import { lane, shortId, openDoc, scanPicker, saveScans, docsReviewQueue, showInvite } from "../components.js";
+import { docActions } from "../editing.js";
 import { summaryView, loadsView, expensesView, taxView, carrierSettingsCard } from "../ops.js";
 
 // The carrier these pages work on: the carrier admin's own company, or the one the owner picked.
@@ -145,7 +146,7 @@ function documents(ctx, root) {
       return h("div", { class: "row" },
         h("div", { class: "grow" }, h("div", { class: "strong" }, d.name),
           h("div", { class: "muted small" }, [d.category || d.kind, d.tags, d.uploaderName, exp ? "exp. " + fmtDate(exp) : null, ago(d.createdAt)].filter(Boolean).join(" · "))),
-        expTag, btn("Open", () => openDoc(d)));
+        expTag, h("div", { class: "row-meta" }, btn("Open", () => openDoc(d)), ...docActions(ctx, d)));
     })) : h("p", { class: "empty" }, docs.length ? "No matches." : "No documents yet."));
   };
   const merge = (() => { const parts = [[], []]; return (i) => (r) => { parts[i] = r; docs = [...parts[0], ...parts[1]]; draw(); }; })();

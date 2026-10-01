@@ -68,11 +68,20 @@ function doPost(e) {
       return reply({ ok: true, data: "data:" + blob.getContentType() + ";base64," + Utilities.base64Encode(blob.getBytes()) });
     }
 
-    // 4) A rejected duplicate: move its Drive copy to the trash.
+    // 4) A rejected duplicate, or a paper someone allowed to is deleting: move its Drive copy to the trash.
     if (body.remove) {
       const meta = firestoreGet("documents/" + body.docId, body.idToken);
       if (!meta) return reply({ ok: false, error: "no access to that document" });
-      if (meta.status !== "rejected") return reply({ ok: false, error: "only rejected documents are removed" });
+      if (meta.status !== "rejected") {
+        if (!body.deleting) return reply({ ok: false, error: "only rejected documents are removed" });
+        // the same people KeepTrack lets delete a paper: the owner, that carrier's admin, or the driver
+        // who sent it while it's still waiting for review
+        const me = firestoreGet("users/" + uid, body.idToken) || {};
+        const may = me.role === "owner"
+          || (me.role === "carrierAdmin" && me.carrierId === meta.carrierId)
+          || (me.role === "driver" && me.carrierId === meta.carrierId && meta.uploadedBy === uid && meta.status === "pending");
+        if (!may) return reply({ ok: false, error: "you can't delete that paper" });
+      }
       const carrier = firestoreGet("carriers/" + meta.carrierId, body.idToken) || {};
       const place = placeFor(meta, carrier, body.idToken);
       const found = ourCopies(body.docId, meta, carrier, place);
