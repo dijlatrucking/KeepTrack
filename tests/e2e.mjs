@@ -937,6 +937,7 @@ await run("Owner edits a load's broker #: its papers are re-filed in Drive", asy
   if (!papers.length) throw new Error("Expected papers on the load");
   const calls = driveCalls.length;
   await nav(owner, "Loads");
+  await owner.locator('[aria-label="Stage"] .chip', { hasText: /^All/ }).first().click(); // it's paid, so not under Active
   await owner.locator(".item", { hasText: "Boise, ID → Denver, CO" }).first().getByRole("button", { name: "Edit", exact: true }).click();
   const F = owner.locator(".form-card");
   await F.getByLabel("Load #").fill("4471999");
