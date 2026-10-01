@@ -3,7 +3,7 @@ import {
   db, storage, collection, doc, addDoc, setDoc, updateDoc, getDoc, getDocs, query, where,
   serverTimestamp, writeBatch, ref, getDownloadURL
 } from "./fb.js";
-import { h, card, table, pill, money, num, fmtDate, ago, field, input, select, btn, formToObj, guard, toast } from "./ui.js";
+import { h, card, table, pill, money, num, fmtDate, ago, field, input, select, btn, formToObj, guard, toast, friendlyError } from "./ui.js";
 import { watch, watchMany, perCarrier, scoped, byNewest } from "./data.js";
 import { sendToDrive, removeFromDrive, fetchFromDrive } from "./drive.js";
 
@@ -316,6 +316,21 @@ function forgetChecks(gone) {
 }
 const dupeText = (r) => r.why === "exact" ? `Exact copy of “${r.other.name}”` : r.why === "load" ? `This load already has a ${r.other.kind}` : `Same amount already sent`;
 
+// Like guard(), for actions on one paper: if it fails because someone else just deleted the paper,
+// say that instead of a confusing "no access".
+export async function guardDoc(id, fn, okMsg) {
+  try {
+    const r = await fn();
+    if (okMsg) toast(okMsg, "ok");
+    return r;
+  } catch (e) {
+    console.warn(e);
+    const gone = await getDoc(doc(db, "documents", id)).then((x) => !x.exists()).catch(() => false);
+    toast(gone ? "Someone else just deleted that paper." : friendlyError(e), "bad");
+    return null;
+  }
+}
+
 // Turn a driver's receipt into an expense (owner / carrier only), so nobody types it twice.
 export async function receiptToExpense(ctx, d) {
   let amount = num(d.amount);
@@ -332,12 +347,16 @@ export async function receiptToExpense(ctx, d) {
   } catch (e) {}
   const created = d.createdAt && d.createdAt.toDate ? d.createdAt.toDate() : new Date();
   const date = `${created.getFullYear()}-${String(created.getMonth() + 1).padStart(2, "0")}-${String(created.getDate()).padStart(2, "0")}`;
-  const ref = await addDoc(collection(db, "expenses"), {
+  // one batch: if the paper was deleted a moment ago, no expense is created either
+  const ref = doc(collection(db, "expenses"));
+  const b = writeBatch(db);
+  b.set(ref, {
     carrierId: d.carrierId, cat: RECEIPT_CAT[d.receiptType] || (d.kind === "Lumper" ? "Lumper" : "Other"), amount: Math.round(amount * 100) / 100,
     truckId, date, paidWith: "own", gallons: 0, state: "", note: [d.uploaderName, d.note].filter(Boolean).join(" · "),
     loadId: d.loadId || null, loadLabel: d.loadLabel || null, docId: d.id, createdAt: serverTimestamp(),
   });
-  await updateDoc(doc(db, "documents", d.id), { status: "approved", reviewedBy: ctx.uid, reviewedAt: serverTimestamp(), expenseId: ref.id, ...(d.amount ? {} : { amount: Math.round(amount * 100) / 100 }) });
+  b.update(doc(db, "documents", d.id), { status: "approved", reviewedBy: ctx.uid, reviewedAt: serverTimestamp(), expenseId: ref.id, ...(d.amount ? {} : { amount: Math.round(amount * 100) / 100 }) });
+  await b.commit();
   return ref.id;
 }
 
@@ -349,7 +368,7 @@ export function docsReviewQueue(ctx, carrierIds, onCount) {
   const box = card("Docs to review", h("span", { class: "muted small" }, "From drivers · goes to the carrier and dispatch"), body);
   let limit = 25, last = [], shownIds = new Set();
   const reject = async (d, reason) => {
-    const ok = await guard(() => updateDoc(doc(db, "documents", d.id), { status: "rejected", rejectReason: reason, reviewedBy: ctx.uid, reviewedAt: serverTimestamp() }), reason === "duplicate" ? "Duplicate rejected" : "Rejected");
+    const ok = await guardDoc(d.id, () => updateDoc(doc(db, "documents", d.id), { status: "rejected", rejectReason: reason, reviewedBy: ctx.uid, reviewedAt: serverTimestamp() }), reason === "duplicate" ? "Duplicate rejected" : "Rejected");
     if (ok !== null) removeFromDrive(d.id);
   };
   const draw = (docs) => {
@@ -381,8 +400,8 @@ export function docsReviewQueue(ctx, carrierIds, onCount) {
         h("div", { class: "acts" },
           btn("View", () => openDoc(d)),
           btn("Edit", () => import("./editing.js").then((m) => m.editDocDialog(ctx, d)), "ghost"),
-          canExpense && isReceiptDoc(d) ? btn("Approve + add expense", () => guard(() => receiptToExpense(ctx, d), "Approved and added to expenses"), "ok") : null,
-          btn("Approve", () => guard(() => updateDoc(doc(db, "documents", d.id), { status: "approved", reviewedBy: ctx.uid, reviewedAt: serverTimestamp() }), "Approved"), canExpense && isReceiptDoc(d) ? "ghost" : "ok"),
+          canExpense && isReceiptDoc(d) ? btn("Approve + add expense", () => guardDoc(d.id, () => receiptToExpense(ctx, d), "Approved and added to expenses"), "ok") : null,
+          btn("Approve", () => guardDoc(d.id, () => updateDoc(doc(db, "documents", d.id), { status: "approved", reviewedBy: ctx.uid, reviewedAt: serverTimestamp() }), "Approved"), canExpense && isReceiptDoc(d) ? "ghost" : "ok"),
           dupBtn,
           btn("Reject", () => reject(d, "rejected"), "ghost")));
     }), moreButton(docs.length, limit, () => { limit += 25; draw(last); })) : h("p", { class: "empty" }, "All caught up."));

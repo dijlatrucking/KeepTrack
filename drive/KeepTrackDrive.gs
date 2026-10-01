@@ -119,9 +119,15 @@ function copyOne(docId, idToken, carrierCache) {
   let saved = existingCopy(docId, meta) || (ext && there && findInPlace(there, place.base, ext, docId)) || legacyCopy(docId, meta, carrier) || searchCopy(docId);
   // No scan in KeepTrack (space freed) and no copy in Drive: nothing to save.
   if (!saved && !m) return { docId: docId, ok: false, error: "scan not found" };
-  const folder = there || makePath(place.path);
-  if (saved) saved = relocate(saved, folder, place.base, ext || extOf(saved.getName()), docId);
-  else saved = createIn(folder, place.base, ext, docId, Utilities.newBlob(Utilities.base64Decode(m[2]), m[1]));
+  // One writer at a time, so two uploads at once can't create the same folder twice.
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    const folder = findPath(place.path) || makePath(place.path);
+    if (!saved) saved = ext && findInPlace(folder, place.base, ext, docId);
+    if (saved) saved = relocate(saved, folder, place.base, ext || extOf(saved.getName()), docId);
+    else saved = createIn(folder, place.base, ext, docId, Utilities.newBlob(Utilities.base64Decode(m[2]), m[1]));
+  } finally { lock.releaseLock(); }
   const size = m ? file.data.length : 0;
   saved.setDescription([MARK + docId, meta.amount ? "$" + money(meta.amount) : "", meta.note || ""].filter(String).join(" · "));
   return { docId: docId, ok: true, url: saved.getUrl(), fileId: saved.getId(), folder: place.path.join(" / "), load: place.loadTitle || "", size: size };
@@ -233,6 +239,8 @@ function findInPlace(folder, base, ext, docId) {
     while (it.hasNext()) { const f = it.next(); if (isOurs(f, docId)) return f; any = true; }
     if (!any) return null;
   }
+  const it = folder.getFilesByName(base + " · " + docId + ext);
+  while (it.hasNext()) { const f = it.next(); if (isOurs(f, docId)) return f; }
   return null;
 }
 
@@ -249,7 +257,10 @@ function createIn(folder, base, ext, docId, blob) {
       return f;
     }
   }
-  throw new Error("too many files named " + base);
+  // 50 papers with the same name: add the KeepTrack id, which is unique
+  const f = folder.createFile(blob.setName(base + " · " + docId + ext));
+  f.setDescription(MARK + docId);
+  return f;
 }
 
 // Anywhere else in Drive (for example a load folder whose name changed since the copy was made).
@@ -266,7 +277,7 @@ function relocate(f, folder, base, ext, docId) {
   const parent = parentOf(f);
   const name = f.getName();
   const inPlace = parent && parent.getId() === folder.getId();
-  if (inPlace && (name === base + ext || name.indexOf(base + " (") === 0)) return f;
+  if (inPlace && (name === base + ext || name.indexOf(base + " (") === 0 || name === base + " · " + docId + ext)) return f;
   for (let i = 1; i <= 50; i++) {
     const want = base + (i > 1 ? " (" + i + ")" : "") + ext;
     if (want === name && inPlace) return f;
@@ -279,6 +290,8 @@ function relocate(f, folder, base, ext, docId) {
       return f;
     }
   }
+  f.setName(base + " · " + docId + ext);
+  if (!inPlace) { f.moveTo(folder); cleanupEmpty(parent); }
   return f;
 }
 

@@ -144,6 +144,7 @@ export function friendlyError(e) {
     "auth/weak-password": "Password needs at least 6 characters.",
     "auth/invalid-email": "That email doesn't look right.",
     "permission-denied": "You don't have access to do that.",
+    "not-found": "Someone else just deleted that. The page will catch up in a moment.",
   };
   return map[code] || (e && e.message) || "Something went wrong.";
 }

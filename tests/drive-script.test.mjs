@@ -75,6 +75,7 @@ const UrlFetchApp = {
 
 const ctx = vm.createContext({
   DriveApp, UrlFetchApp,
+  LockService: { getScriptLock: () => ({ waitLock() {}, releaseLock() {} }) },
   Utilities: {
     newBlob: (bytes, type, name) => blobOf(bytes, type, name),
     base64Decode: (s) => Buffer.from(s, "base64"),
@@ -310,6 +311,86 @@ check("Deleting a paper trashes its Drive copy, but only for people allowed to d
 check("Bad sign-ins are refused", () => {
   eq(call({ idToken: "forged", docId: "docBOL1abcdefghijklm" }).ok, false, "forged token");
   eq(call({ docId: "docBOL1abcdefghijklm" }).ok, false, "no token");
+});
+
+// ---------- Stress: a busy month of paperwork ----------
+check("Stress: 750 papers across 30 loads, drivers and company files each land in exactly one place", () => {
+  const t0 = Date.now();
+  const kinds = ["BOL", "POD", "Rate con", "Lumper", "Receipt"];
+  for (let l = 0; l < 30; l++) put(`loads/SL${l}`, { carrierId: "A", loadNo: `S${1000 + l}`, pickupDate: `2026-${l < 15 ? "10" : "11"}-${String((l % 28) + 1).padStart(2, "0")}`, origin: `City ${l}, ID`, destination: `Town ${l}, UT` });
+  const ids = [];
+  for (let i = 0; i < 600; i++) {
+    const id = `stressLoadPaper${String(i).padStart(4, "0")}`;
+    const kind = kinds[i % 5];
+    scan(id, { kind, loadId: `SL${i % 30}`, uploaderRole: i % 2 ? "driver" : "dispatcher", uploaderName: `Driver ${i % 7}`, uploadedBy: "drv1", amount: kind === "Lumper" || kind === "Receipt" ? 50 + (i % 40) : null, receiptType: kind === "Receipt" ? "Fuel" : null, createdAt: `2026-10-${String((i % 28) + 1).padStart(2, "0")}T18:00:00Z` });
+    ids.push(id);
+  }
+  for (let i = 0; i < 100; i++) { const id = `stressReceipt${String(i).padStart(4, "0")}`; scan(id, { kind: "Receipt", receiptType: "Tolls", amount: 5 + i, category: "Receipts", uploaderRole: "driver", uploaderName: `Driver ${i % 7}`, uploadedBy: "drv1" }); ids.push(id); }
+  for (let i = 0; i < 50; i++) { const id = `stressCompany${String(i).padStart(4, "0")}`; scan(id, { kind: "Insurance", category: "Insurance", name: `Policy ${i}`, uploaderRole: "carrierAdmin", status: "filed" }, PDF); ids.push(id); }
+  for (const id of ids) { const r = call({ idToken: "tok-owner", docId: id }); if (!r.ok) throw new Error(id + ": " + r.error); }
+  const live = [...files.values()].filter((f) => !f.trashed && f.desc.startsWith("KeepTrack stress"));
+  eq(live.length, 750, "one copy per paper");
+  const places = new Set(live.map((f) => pathOf(f) + " / " + f.name));
+  eq(places.size, 750, "no two files share a folder and name");
+  for (const id of ids) eq(live.filter((f) => f.desc.startsWith("KeepTrack " + id)).length, 1, "copies of " + id);
+  const loadFolders = [...folders.values()].filter((f) => !f.trashed && /· S1\d{3} ·/.test(f.name));
+  eq(loadFolders.length, 30, "one folder per load");
+  console.log(`      750 papers filed in ${Date.now() - t0} ms`);
+});
+
+check("Stress: 10 loads get new broker numbers; their 200 papers move, nothing is duplicated, old folders are cleaned up", () => {
+  const t0 = Date.now();
+  for (let l = 0; l < 10; l++) put(`loads/SL${l}`, { ...db[`loads/SL${l}`], loadNo: `NEW${l}` });
+  const moved = Object.keys(db).filter((k) => k.startsWith("documents/stressLoadPaper") && /^SL\d$/.test(db[k].loadId)).map((k) => k.slice(10));
+  eq(moved.length, 200, "papers on renamed loads");
+  for (const id of moved) call({ idToken: "tok-owner", docId: id });
+  const live = [...files.values()].filter((f) => !f.trashed && f.desc.startsWith("KeepTrack stress"));
+  eq(live.length, 750, "still one copy per paper");
+  for (const id of moved) { const f = fileFor(id); if (!/· NEW\d ·/.test(f.parent.name)) throw new Error(id + " not moved: " + pathOf(f)); if (!/· NEW\d(\.| \()/.test(f.name)) throw new Error(id + " not renamed: " + f.name); }
+  const stale = [...folders.values()].filter((f) => !f.trashed && /· S100\d ·/.test(f.name));
+  eq(stale.length, 0, "old load folders cleaned up");
+  console.log(`      200 papers re-filed in ${Date.now() - t0} ms`);
+});
+
+check("Stress: 60 papers with the same name never collide (and never error)", () => {
+  put("loads/SAME", { carrierId: "A", loadNo: "SAME1", pickupDate: "2026-12-01", origin: "A, ID", destination: "B, UT" });
+  for (let i = 0; i < 60; i++) scan(`samePaper${String(i).padStart(3, "0")}xxxxxxxx`, { kind: "BOL", loadId: "SAME", uploaderRole: "dispatcher", createdAt: "2026-12-01T18:00:00Z" });
+  for (let i = 0; i < 60; i++) { const r = call({ idToken: "tok-owner", docId: `samePaper${String(i).padStart(3, "0")}xxxxxxxx` }); if (!r.ok) throw new Error(r.error); }
+  const names = [...files.values()].filter((f) => !f.trashed && f.desc.startsWith("KeepTrack samePaper")).map((f) => f.name);
+  eq(names.length, 60, "60 copies");
+  eq(new Set(names).size, 60, "60 different names");
+  for (let i = 0; i < 60; i++) call({ idToken: "tok-owner", docId: `samePaper${String(i).padStart(3, "0")}xxxxxxxx` });
+  const again = [...files.values()].filter((f) => !f.trashed && f.desc.startsWith("KeepTrack samePaper")).map((f) => f.name);
+  eq(again.length, 60, "sending them all again makes no extra copies");
+  eq(again.sort().join("|"), names.sort().join("|"), "and doesn't rename anything");
+});
+
+check("Stress: deleting 375 papers trashes exactly their copies and leaves the rest alone", () => {
+  const t0 = Date.now();
+  const all = Object.keys(db).filter((k) => k.startsWith("documents/stress")).map((k) => k.slice(10)).sort();
+  const gone = all.filter((_, i) => i % 2 === 0);
+  for (const id of gone) {
+    const r = call({ idToken: "tok-owner", docId: id, remove: true, deleting: true });
+    if (!r.ok || r.removed !== 1) throw new Error(`${id}: ${JSON.stringify(r)}`);
+    delete db["documents/" + id]; delete db["docFiles/" + id];
+  }
+  const live = [...files.values()].filter((f) => !f.trashed && f.desc.startsWith("KeepTrack stress"));
+  eq(live.length, all.length - gone.length, "remaining copies");
+  for (const id of gone) if (fileFor(id)) throw new Error(id + " still in Drive");
+  const emptyAlive = [...folders.values()].filter((f) => !f.trashed && f.parent && f.parent.name !== "My Drive" && f.parent.parent && f.parent.parent.name === "KeepTrack" ? false : !f.trashed && f.kids().filter((k) => !k.trashed).length === 0 && f.docs().filter((d) => !d.trashed).length === 0 && f.name !== "KeepTrack" && f.name !== "My Drive" && f.parent && f.parent.name !== "KeepTrack");
+  eq(emptyAlive.length, 0, "no empty folders left behind: " + emptyAlive.map((f) => f.name).join(", "));
+  console.log(`      375 deletes in ${Date.now() - t0} ms`);
+});
+
+check("Stress: after freeing space, 100 scans still open from Drive byte-for-byte", () => {
+  const left = Object.keys(db).filter((k) => k.startsWith("documents/stress")).map((k) => k.slice(10)).slice(0, 100);
+  for (const id of left) {
+    const before = db["docFiles/" + id].data;
+    put("documents/" + id, { ...db["documents/" + id], driveFileId: fileFor(id).id, fileFreed: true });
+    delete db["docFiles/" + id];
+    const r = call({ idToken: "tok-owner", docId: id, fetch: true });
+    if (!r.ok || r.data !== before) throw new Error(id + " didn't come back intact");
+  }
 });
 
 check("The script has nothing a phone paste would mangle (no /* comments)", () => {

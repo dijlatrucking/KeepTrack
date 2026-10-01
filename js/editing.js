@@ -55,11 +55,18 @@ async function loadsOf(carrierId) {
     .sort((a, b) => String(b.pickupDate || "").localeCompare(String(a.pickupDate || ""))).slice(0, 80) : [];
 }
 
+// Runs fn over items, a few at a time (the Drive script handles several requests at once).
+async function pool(items, size, fn) {
+  let next = 0;
+  const worker = async () => { while (next < items.length) { const i = next++; await fn(items[i], i); } };
+  await Promise.all(Array.from({ length: Math.min(size, items.length) }, worker));
+}
+
 // Re-file a paper's Drive copy after its details change (the Drive script moves and renames it).
 async function refile(ids) {
   if (!ids.length || !(await driveUrl())) return 0;
   let n = 0;
-  for (const id of ids) if (await sendToDrive(id, { quiet: true })) n++;
+  await pool(ids, 3, async (id) => { if (await sendToDrive(id, { quiet: true })) n++; });
   return n;
 }
 
@@ -133,22 +140,30 @@ export function editDocDialog(ctx, d) {
 
 // Deletes a paper: its Drive copy goes to the Drive trash first (while KeepTrack can still prove who
 // may delete it), then the record and the scan. Returns true when deleted.
+const deleting = new Set(); // a second tap on Delete while the first is still working does nothing
 export async function deleteDocFlow(ctx, d, { ask = true } = {}) {
-  const inDrive = !!(d.driveFileId || d.fileFreed);
-  if (ask && !confirm(`Delete “${d.name || d.kind || "this paper"}”?\n\n` +
-    `It's removed from KeepTrack${inDrive || (await driveUrl()) ? ", and its copy in Google Drive goes to the Drive trash" : ""}.` +
-    (d.fileFreed ? " (This scan only lives in Drive now.)" : "") +
-    (d.expenseId ? "\n\nThe expense made from it stays in Expenses." : ""))) return false;
-  const drive = await removeFromDrive(d.id, { deleting: true });
-  const ok = await guard(async () => {
-    const b = writeBatch(db);
-    b.delete(doc(db, "docFiles", d.id));
-    b.delete(doc(db, "documents", d.id));
-    await b.commit();
-    return true;
-  }, ask ? "Paper deleted" : undefined);
-  if (ok && ask && drive === null && inDrive) toast("Deleted in KeepTrack, but its Drive copy couldn't be removed. You can delete it in Drive.", "bad");
-  return !!ok;
+  if (deleting.has(d.id)) return false;
+  deleting.add(d.id); // before anything else, so a double tap never asks twice
+  try {
+    const inDrive = !!(d.driveFileId || d.fileFreed);
+    const driveOn = inDrive || !!(await driveUrl());
+    if (ask && !confirm(`Delete “${d.name || d.kind || "this paper"}”?\n\n` +
+      `It's removed from KeepTrack${driveOn ? ", and its copy in Google Drive goes to the Drive trash" : ""}.` +
+      (d.fileFreed ? " (This scan only lives in Drive now.)" : "") +
+      (d.expenseId ? "\n\nThe expense made from it stays in Expenses." : ""))) return false;
+    const drive = await removeFromDrive(d.id, { deleting: true });
+    const del = async () => {
+      const b = writeBatch(db);
+      b.delete(doc(db, "docFiles", d.id));
+      b.delete(doc(db, "documents", d.id));
+      await b.commit();
+      return true;
+    };
+    // in a bulk delete the caller reports errors once, for the whole job
+    const ok = ask ? await guard(del, "Paper deleted") : await del();
+    if (ok && ask && drive === null && inDrive) toast("Deleted in KeepTrack, but its Drive copy couldn't be removed. You can delete it in Drive.", "bad");
+    return !!ok;
+  } finally { deleting.delete(d.id); }
 }
 
 // ---------- Loads ----------
@@ -182,11 +197,18 @@ export async function afterLoadEdit(ctx, before, after) {
 export async function deleteLoadFlow(ctx, l) {
   const papersSnap = await getDocs(query(collection(db, "documents"), where("carrierId", "==", l.carrierId), where("loadId", "==", l.id))).catch(() => null);
   const papers = papersSnap ? papersSnap.docs.map((x) => ({ id: x.id, ...x.data() })) : [];
+  const status = h("p", { class: "scanmsg", role: "status" });
+  const buttons = h("div", { class: "stack" });
+  let running = false;
   const run = async (withPapers, close) => {
-    close();
+    if (running) return;
+    running = true;
+    buttons.hidden = true;
     const ok = await guard(async () => {
       if (withPapers) {
-        for (const d of papers) await deleteDocFlow(ctx, d, { ask: false });
+        let done = 0;
+        status.textContent = `Deleting papers… 0/${papers.length}`;
+        await pool(papers, 4, async (d) => { await deleteDocFlow(ctx, d, { ask: false }); status.textContent = `Deleting papers… ${++done}/${papers.length}`; });
       } else if (papers.length) {
         const b = writeBatch(db);
         papers.forEach((d) => b.update(doc(db, "documents", d.id), { loadId: null, loadLabel: null }));
@@ -198,9 +220,11 @@ export async function deleteLoadFlow(ctx, l) {
       if (ex) ex.docs.forEach((x) => b.update(doc(db, "expenses", x.id), { loadId: null, loadLabel: null }));
       b.delete(doc(db, "loadMoney", l.id));
       b.delete(doc(db, "loads", l.id));
+      status.textContent = "Deleting the load…";
       await b.commit();
       return true;
     }, "Load deleted");
+    close();
     // kept papers leave the load's Drive folder for the driver's or company folder
     if (ok && !withPapers && papers.length) refile(papers.map((d) => d.id));
   };
@@ -209,10 +233,11 @@ export async function deleteLoadFlow(ctx, l) {
     h("p", { class: "muted small" }, papers.length
       ? `This load has ${papers.length} paper${papers.length === 1 ? "" : "s"} (${[...new Set(papers.map((d) => d.kind || "Doc"))].join(", ")}). Expenses on it are kept but no longer tied to a load.`
       : "Expenses on it are kept but no longer tied to a load."),
-    h("div", { class: "stack" },
-      papers.length ? btn(`Delete load and its ${papers.length} paper${papers.length === 1 ? "" : "s"}`, () => run(true, close), "warn") : null,
+    (buttons.replaceChildren(
+      papers.length ? btn(`Delete load and its ${papers.length} paper${papers.length === 1 ? "" : "s"}`, () => run(true, close), "warn") : "",
       btn(papers.length ? "Delete load, keep the papers" : "Delete load", () => run(false, close), papers.length ? "ghost" : "warn"),
-      btn("Cancel", () => close(), "ghost")),
+      btn("Cancel", () => close(), "ghost")), buttons),
+    status,
   ]);
 }
 

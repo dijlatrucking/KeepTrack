@@ -144,7 +144,11 @@ service cloud.firestore {
         || isCarrierAdmin(resource.data.carrierId)
         || (hasProfile() && resource.data.uploadedBy == request.auth.uid
             && me().get('carrierId', '') == resource.data.carrierId);
-      allow create: if request.resource.data.uploadedBy == request.auth.uid && (
+      // a paper can only be filed under a load that exists and belongs to the same carrier
+      allow create: if request.resource.data.uploadedBy == request.auth.uid
+        && (request.resource.data.get('loadId', null) == null
+            || get(/databases/$(database)/documents/loads/$(request.resource.data.loadId)).data.carrierId == request.resource.data.carrierId)
+        && (
            (isDriverIn(request.resource.data.carrierId) && request.resource.data.status == 'pending')
         || (isCarrierAdmin(request.resource.data.carrierId) && request.resource.data.status == 'filed')
         || staff(request.resource.data.carrierId));

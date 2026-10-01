@@ -1142,6 +1142,185 @@ await run("Carrier's own dashboard is unaffected by other carriers' volume", asy
   if (/Volume Carrier|City \d+, ID/.test(body)) throw new Error("Carrier can see other carriers' data");
 });
 
+// ---------- 9. Stress: editing and deleting at volume, races and double taps ----------
+const stress = {};
+await run("Stress: seed a 40-paper load and 30 company papers (with scans) for the carrier", async () => {
+  const users = await adminDocs("users"), carriers = await adminDocs("carriers");
+  stress.cid = carriers.find((c) => c.name === "Test Carrier A").id;
+  const adm = users.find((u) => u.role === "carrierAdmin" && u.carrierId === stress.cid);
+  const drv = users.find((u) => u.name === "Drew Driver");
+  const disp = users.find((u) => u.role === "dispatcher" && u.name === "Dana Dispatch") || users.find((u) => u.role === "dispatcher");
+  const data = "data:image/jpeg;base64," + Buffer.from("x".repeat(3000)).toString("base64");
+  await seed(async (db) => {
+    let b = writeBatch(db), n = 0;
+    const add = async (ref, d) => { b.set(ref, d); if (++n >= 400) { await b.commit(); b = writeBatch(db); n = 0; } };
+    await add(doc(db, "loads", "STRESSLOAD01"), { carrierId: stress.cid, loadNo: "STRESS-1", origin: "Boise, ID", destination: "Reno, NV", pickupDate: "2026-10-05", status: "booked", dispatcherId: disp.id, dispatcherName: disp.name || "", createdAt: new Date() });
+    await add(doc(db, "loadMoney", "STRESSLOAD01"), { carrierId: stress.cid, rate: 1500, fee: 120, feePaid: false });
+    const kinds = ["BOL", "POD", "Lumper", "Receipt"];
+    for (let i = 0; i < 40; i++) {
+      const id = `stressPaper${String(i).padStart(3, "0")}`, kind = kinds[i % 4];
+      await add(doc(db, "documents", id), { carrierId: stress.cid, loadId: "STRESSLOAD01", loadLabel: "#STRESS Boise, ID → Reno, NV", kind, name: `${kind} stress ${i}`, status: i === 0 ? "pending" : "approved", uploadedBy: drv.id, uploaderName: "Drew Driver", uploaderRole: "driver", amount: kind === "Lumper" ? 40 + i : null, size: data.length, hash: "stress" + i, createdAt: i === 0 ? new Date("2020-01-02") : new Date() }); // the pending one sorts first in review queues
+      await add(doc(db, "docFiles", id), { carrierId: stress.cid, uploadedBy: drv.id, data });
+    }
+    for (let i = 0; i < 30; i++) {
+      const id = `stressCompany${String(i).padStart(3, "0")}`;
+      await add(doc(db, "documents", id), { carrierId: stress.cid, kind: "Insurance", category: "Insurance", name: `Stress company paper ${String(i + 1).padStart(2, "0")}`, status: "filed", uploadedBy: adm.id, uploaderName: adm.name || "", uploaderRole: "carrierAdmin", size: data.length, hash: "stressc" + i, createdAt: new Date() });
+      await add(doc(db, "docFiles", id), { carrierId: stress.cid, uploadedBy: adm.id, data });
+    }
+    if (n) await b.commit();
+  });
+});
+
+await run("Stress: back up 70 new scans at volume; the 300 volume records with no scan are reported, not fatal", async () => {
+  const t0 = Date.now();
+  await nav(owner, "Settings");
+  const card = owner.locator(".card", { hasText: "Storage & backup" });
+  const before = backupPdfs.length;
+  await card.getByRole("button", { name: "Back up to Drive" }).click();
+  await waitFor(() => backupPdfs.length > before, "No backup report", 240000);
+  await card.getByRole("button", { name: "Back up to Drive", exact: true }).waitFor({ timeout: 60000 });
+  timings.push(["Back up 70 scans while 300 records have no scan", Date.now() - t0]);
+  const missing = (await adminDocs("documents")).filter((d) => d.id.startsWith("stress") && !d.backedUpAt);
+  if (missing.length) throw new Error(`${missing.length} stress papers weren't backed up`);
+  if (!backupPdfs[backupPdfs.length - 1].text.includes("didn't make it")) throw new Error("Report should list the records that have no scan");
+});
+
+await run("Stress: owner gives the 40-paper load a new broker #; every paper is re-filed in Drive", async () => {
+  const t0 = Date.now(), calls = driveCalls.length;
+  await nav(owner, "Loads");
+  await owner.locator('[aria-label="Stage"] .chip', { hasText: /^All/ }).first().click();
+  await owner.getByLabel("Search loads").fill("STRESS-1");
+  await owner.locator(".item", { hasText: "Boise, ID → Reno, NV" }).first().getByRole("button", { name: "Edit", exact: true }).click();
+  const F = owner.locator(".form-card");
+  await F.getByLabel("Load #").fill("STRESS-2");
+  await F.getByRole("button", { name: "Save changes" }).click();
+  await toast(owner, "Load saved");
+  await waitFor(() => new Set(driveCalls.slice(calls).filter((c) => c.ok && String(c.docId).startsWith("stressPaper")).map((c) => c.docId)).size === 40, "Not all 40 papers were re-filed", 120000);
+  timings.push(["Re-file 40 papers after a load edit", Date.now() - t0]);
+  await owner.getByLabel("Search loads").fill("");
+});
+
+await run("Stress: owner and carrier edit the same paper at the same moment; one wins cleanly, one Drive copy", async () => {
+  await nav(owner, "Documents");
+  await owner.getByLabel("Search all documents").fill("Stress company paper 01");
+  await nav(carrier, "Documents");
+  await carrier.getByLabel("Search documents").fill("Stress company paper 01");
+  await owner.locator("tr", { hasText: "Stress company paper 01" }).first().getByRole("button", { name: "Edit" }).click();
+  await carrier.locator(".card", { hasText: "Document vault" }).locator(".row", { hasText: "Stress company paper 01" }).first().getByRole("button", { name: "Edit" }).click();
+  await owner.locator("dialog[open]").getByLabel("Note").fill("owner's note");
+  await carrier.locator("dialog[open]").getByLabel("Note").fill("carrier's note");
+  await Promise.all([
+    owner.locator("dialog[open]").getByRole("button", { name: "Save", exact: true }).click(),
+    carrier.locator("dialog[open]").getByRole("button", { name: "Save", exact: true }).click(),
+  ]);
+  await toast(owner, "Paper saved");
+  await toast(carrier, "Paper saved");
+  const d = (await adminDocs("documents")).find((x) => x.id === "stressCompany000");
+  if (!["owner's note", "carrier's note"].includes(d.note)) throw new Error("Unexpected note: " + d.note);
+  await waitFor(() => [...driveFiles.values()].filter((f) => f.docId === "stressCompany000" && !f.trashed).length === 1, "Should be exactly one Drive copy");
+  await owner.getByLabel("Search all documents").fill("");
+});
+
+await run("Stress: a paper deleted while waiting in dispatch's queue vanishes there; a stale Approve says so plainly", async () => {
+  await nav(dispatcher, "Tasks");
+  const row = dispatcher.locator(".row", { hasText: "BOL stress 0" }).first();
+  await row.waitFor({ timeout: 30000 });
+  await nav(carrier, "Loads");
+  await carrier.getByLabel("Search loads").fill("STRESS-2");
+  await carrier.locator(".item", { hasText: "Boise, ID → Reno, NV" }).first().getByRole("button", { name: /Scan paperwork/ }).click();
+  const dlg = carrier.locator("dialog[open]");
+  carrier.once("dialog", (x) => x.accept());
+  await dlg.locator(".row", { hasText: "BOL stress 0" }).first().getByRole("button", { name: "Delete" }).click();
+  await toast(carrier, "Paper deleted");
+  await dlg.getByRole("button", { name: "Cancel" }).click();
+  await row.waitFor({ state: "detached", timeout: 15000 });
+  await dispatcher.evaluate(async () => {
+    const { db, doc, updateDoc } = await import("./js/fb.js");
+    const { guardDoc } = await import("./js/components.js");
+    await guardDoc("stressPaper000", () => updateDoc(doc(db, "documents", "stressPaper000"), { status: "approved" }), "Approved");
+  });
+  await toast(dispatcher, "Someone else just deleted that paper.");
+  if ((await adminDocs("docFiles")).some((f) => f.id === "stressPaper000")) throw new Error("Scan left behind");
+  await carrier.getByLabel("Search loads").fill("");
+});
+
+await run("Stress: double-tapping Delete asks once and deletes once", async () => {
+  await nav(carrier, "Documents");
+  await carrier.getByLabel("Search documents").fill("Stress company paper 02");
+  let asked = 0;
+  const accept = (x) => { asked++; x.accept(); };
+  carrier.on("dialog", accept);
+  await carrier.locator(".card", { hasText: "Document vault" }).locator(".row", { hasText: "Stress company paper 02" }).first().getByRole("button", { name: "Delete" }).dblclick();
+  await toast(carrier, "Paper deleted");
+  await carrier.waitForTimeout(1500);
+  carrier.off("dialog", accept);
+  if (asked !== 1) throw new Error(`Asked ${asked} times`);
+  if ((await adminDocs("documents")).some((d) => d.id === "stressCompany001")) throw new Error("Not deleted");
+  const removes = driveCalls.filter((c) => c.docId === "stressCompany001" && c.deleting);
+  if (removes.length !== 1) throw new Error(`Drive was asked to remove it ${removes.length} times`);
+});
+
+await run("Stress: carrier deletes 20 papers back to back", async () => {
+  const t0 = Date.now();
+  await carrier.getByLabel("Search documents").fill("Stress company paper");
+  const vault = carrier.locator(".card", { hasText: "Document vault" });
+  const rows = vault.locator(".row", { hasText: "Stress company paper" });
+  const accept = (x) => x.accept();
+  carrier.on("dialog", accept);
+  try {
+    for (let i = 0; i < 20; i++) {
+      const before = await rows.count();
+      await rows.first().getByRole("button", { name: "Delete" }).click();
+      await waitFor(async () => (await rows.count()) < before, `Delete ${i + 1} didn't finish`);
+    }
+  } finally { carrier.off("dialog", accept); }
+  timings.push(["Carrier deletes 20 papers one after another", Date.now() - t0]);
+  const left = (await adminDocs("documents")).filter((d) => d.id.startsWith("stressCompany"));
+  if (left.length !== 9) throw new Error(`Expected 9 company papers left, found ${left.length}`);
+  await carrier.getByLabel("Search documents").fill("");
+});
+
+await run("Stress: owner deletes the 40-paper load together with all its papers", async () => {
+  const t0 = Date.now();
+  await nav(owner, "Loads");
+  await owner.locator('[aria-label="Stage"] .chip', { hasText: /^All/ }).first().click();
+  await owner.getByLabel("Search loads").fill("STRESS-2");
+  await owner.locator(".item", { hasText: "Boise, ID → Reno, NV" }).first().getByRole("button", { name: "Delete" }).click();
+  await owner.locator("dialog[open]").getByRole("button", { name: /Delete load and its 39 papers/ }).click();
+  await toast(owner, "Load deleted");
+  timings.push(["Delete a load with 39 papers (and their Drive copies)", Date.now() - t0]);
+  const docs = await adminDocs("documents");
+  if (docs.some((d) => d.loadId === "STRESSLOAD01" || d.id.startsWith("stressPaper"))) throw new Error("Papers left behind");
+  if ((await adminDocs("docFiles")).some((f) => f.id.startsWith("stressPaper"))) throw new Error("Scans left behind");
+  if ((await adminDocs("loads")).some((l) => l.id === "STRESSLOAD01") || (await adminDocs("loadMoney")).some((m) => m.id === "STRESSLOAD01")) throw new Error("Load left behind");
+  const live = [...driveFiles.values()].filter((f) => !f.trashed && f.docId.startsWith("stressPaper"));
+  if (live.length) throw new Error(`${live.length} Drive copies left behind`);
+  await owner.getByLabel("Search loads").fill("");
+});
+
+await run("Stress: free up space at volume, then no orphans anywhere and the storage meter matches the records", async () => {
+  await nav(owner, "Settings");
+  const card = owner.locator(".card", { hasText: "Storage & backup" });
+  owner.once("dialog", (x) => x.accept());
+  await card.getByRole("button", { name: "Free up space" }).click();
+  await toast(owner, /Freed about/);
+  const docs = await adminDocs("documents"), scans = await adminDocs("docFiles");
+  const ids = new Set(docs.map((d) => d.id));
+  const orphanScans = scans.filter((f) => !ids.has(f.id));
+  if (orphanScans.length) throw new Error(`${orphanScans.length} scans without a record`);
+  const orphanDrive = [...driveFiles.values()].filter((f) => !f.trashed && !ids.has(f.docId));
+  if (orphanDrive.length) throw new Error(`${orphanDrive.length} Drive copies of deleted papers, e.g. ${orphanDrive[0].docId}`);
+  const lost = docs.filter((d) => d.fileFreed && !(driveFiles.get(d.driveFileId) && !driveFiles.get(d.driveFileId).trashed));
+  if (lost.length) throw new Error(`${lost.length} moved scans missing from Drive`);
+  const backedStillHere = docs.filter((d) => d.backedUpAt && !d.fileFreed && scans.some((f) => f.id === d.id));
+  if (backedStillHere.length) throw new Error(`${backedStillHere.length} backed-up scans weren't freed`);
+  const held = docs.filter((d) => !d.fileFreed && !d.fileCleared).length;
+  await owner.waitForFunction((n) => {
+    const t = [...document.querySelectorAll(".stat")].find((x) => x.querySelector(".stat-label")?.textContent === "Scans in KeepTrack");
+    return t && t.querySelector(".stat-value").textContent.replace(/,/g, "") === String(n);
+  }, held, { timeout: 30000 });
+});
+
 for (const [who, p] of Object.entries(pages)) await p.screenshot({ path: `${OUT}/volume-${who}.png` }).catch(() => {});
 
 // ---------- Report ----------

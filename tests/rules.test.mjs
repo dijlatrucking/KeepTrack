@@ -25,6 +25,9 @@ const U = {
   drvB1: { role: "driver", carrierId: "B", name: "Driver B1" },
   pend1: { role: "pending", requestedRole: "carrierAdmin", name: "Pending" },
 };
+const MATRIX_ROLES = ["owner", "dispA", "dispNone", "adminA", "adminB", "drvA1", "drvA2", "drvB1", "anon"];
+const MATRIX_STATUSES = ["pending", "approved", "filed", "rejected"];
+const MATRIX_ACTIONS = ["read", "edit", "moveOwnLoad", "moveOtherCarrier", "changeCarrier", "delete", "deleteScanOnly"];
 await env.withSecurityRulesDisabled(async (c) => {
   const db = c.firestore();
   const put = (p, d) => setDoc(doc(db, p), d);
@@ -52,6 +55,18 @@ await env.withSecurityRulesDisabled(async (c) => {
   await put("documents/D7", { carrierId: "A", uploadedBy: "drvA1", status: "approved", name: "POD", kind: "POD", loadId: "L1" });
   await put("documents/D8", { carrierId: "A", uploadedBy: "dispA", status: "approved", name: "Rate con", kind: "Rate con", loadId: "L4" });
   for (const id of ["D6", "D7", "D8"]) await put(`docFiles/${id}`, { carrierId: "A", uploadedBy: "x", data: "data:image/jpeg;base64,AAAA" });
+  // Permission matrix: a fresh paper (and scan) for every role × status × action, and a fresh load per delete check
+  for (const r of MATRIX_ROLES) for (const st of MATRIX_STATUSES) for (const act of MATRIX_ACTIONS) {
+    const id = `M_${r}_${st}_${act}`;
+    const by = st === "filed" ? "adminA" : "drvA1";
+    await put(`documents/${id}`, { carrierId: "A", uploadedBy: by, status: st, name: id, kind: "BOL", loadId: "L1" });
+    await put(`docFiles/${id}`, { carrierId: "A", uploadedBy: by, data: "data:image/jpeg;base64,AAAA" });
+  }
+  for (const r of MATRIX_ROLES) for (const kind of ["self", "dispatched"]) {
+    const id = `ML_${r}_${kind}`;
+    await put(`loads/${id}`, { carrierId: "A", status: "booked", dispatcherId: kind === "self" ? null : "dispA" });
+    await put(`loadMoney/${id}`, { carrierId: "A", rate: 1000, fee: kind === "self" ? 0 : 80, feePaid: false });
+  }
   for (const d of ["D1", "D2", "D3", "D4"]) {
     const src = { D1: ["A", "drvA1"], D2: ["A", "drvA1"], D3: ["B", "drvB1"], D4: ["A", "adminA"] }[d];
     await put(`docFiles/${d}`, { carrierId: src[0], uploadedBy: src[1], data: "data:image/jpeg;base64,AAAA" });
@@ -371,6 +386,52 @@ await deny("dispatcher deletes a load", () => delLoad(s, "L4"));
 await deny("driver deletes a load", () => delLoad(d, "L4"));
 await allow("carrier admin deletes a load they booked themselves", () => delLoad(a, "L4"));
 await allow("owner deletes a dispatched load", () => delLoad(o, "L5"));
+
+// ---------- Permission matrix (stress): every role × paper status × action, against the intended policy ----------
+{
+  const ctxOf = (r) => (r === "anon" ? anon() : as(r));
+  const policy = (r, st, act) => {
+    const own = st !== "filed"; // drvA1 uploaded every non-filed paper
+    switch (act) {
+      case "read": return ["owner", "dispA", "adminA"].includes(r) || (r === "drvA1" && own);
+      case "edit": case "moveOwnLoad": return ["owner", "dispA", "adminA"].includes(r);
+      case "moveOtherCarrier": case "changeCarrier": return false;
+      case "delete": return r === "owner" || r === "adminA" || (r === "drvA1" && st === "pending");
+      case "deleteScanOnly": return r === "owner";
+    }
+  };
+  const doIt = (db, id, act) => {
+    const ref = doc(db, "documents", id);
+    switch (act) {
+      case "read": return getDoc(ref);
+      case "edit": return updateDoc(ref, { note: "fixed", amount: 10, kind: "POD", category: "BOLs" });
+      case "moveOwnLoad": return updateDoc(ref, { loadId: "L2", loadLabel: "#L2" });
+      case "moveOtherCarrier": return updateDoc(ref, { loadId: "L3", loadLabel: "#L3" });
+      case "changeCarrier": return updateDoc(ref, { carrierId: "B" });
+      case "delete": { const b = writeBatch(db); b.delete(doc(db, "docFiles", id)); b.delete(ref); return b.commit(); }
+      case "deleteScanOnly": return deleteDoc(doc(db, "docFiles", id));
+    }
+  };
+  for (const r of MATRIX_ROLES) for (const st of MATRIX_STATUSES) for (const act of MATRIX_ACTIONS) {
+    const want = policy(r, st, act);
+    await check(want ? "allow" : "deny", `matrix: ${r} · ${act} · ${st} paper`, () => doIt(ctxOf(r), `M_${r}_${st}_${act}`, act));
+  }
+  // loads: only the owner deletes a dispatched load; a carrier admin may delete one they booked
+  for (const r of MATRIX_ROLES) for (const kind of ["self", "dispatched"]) {
+    const want = r === "owner" || (r === "adminA" && kind === "self");
+    const id = `ML_${r}_${kind}`;
+    await check(want ? "allow" : "deny", `matrix: ${r} · delete ${kind === "self" ? "self-booked" : "dispatched"} load`, () => {
+      const db = ctxOf(r); const b = writeBatch(db); b.delete(doc(db, "loadMoney", id)); b.delete(doc(db, "loads", id)); return b.commit();
+    });
+  }
+  // new papers can only be filed under an existing load of the same carrier
+  const upload = (db, by, extra) => { const b = writeBatch(db); const r = doc(collection(db, "documents")); b.set(r, { carrierId: "A", uploadedBy: by, status: by.startsWith("drv") ? "pending" : "approved", name: "x", ...extra }); b.set(doc(db, "docFiles", r.id), { carrierId: "A", uploadedBy: by, data: "x" }); return b.commit(); };
+  await allow("driver uploads to their carrier's load", () => upload(as("drvA1"), "drvA1", { loadId: "L2" }));
+  await deny("driver uploads onto carrier B's load", () => upload(as("drvA1"), "drvA1", { loadId: "L3" }));
+  await deny("driver uploads onto a load that was deleted", () => upload(as("drvA1"), "drvA1", { loadId: "GONE" }));
+  await allow("dispatcher files paperwork on an assigned carrier's load", () => upload(as("dispA"), "dispA", { loadId: "L2" }));
+  await deny("dispatcher files carrier A paperwork under carrier B's load", () => upload(as("dispA"), "dispA", { loadId: "L3" }));
+}
 
 // ---------- Report ----------
 const failed = results.filter((r) => !r.ok);
