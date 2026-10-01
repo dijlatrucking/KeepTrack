@@ -25,7 +25,7 @@ const U = {
   drvB1: { role: "driver", carrierId: "B", name: "Driver B1" },
   pend1: { role: "pending", requestedRole: "carrierAdmin", name: "Pending" },
 };
-const MATRIX_ROLES = ["owner", "dispA", "dispNone", "adminA", "adminB", "drvA1", "drvA2", "drvB1", "anon"];
+const MATRIX_ROLES = ["owner", "dispA", "dispZero", "adminA", "adminB", "drvA1", "drvA2", "drvB1", "anon"];
 const MATRIX_STATUSES = ["pending", "approved", "filed", "rejected"];
 const MATRIX_ACTIONS = ["read", "edit", "moveOwnLoad", "moveOtherCarrier", "changeCarrier", "delete", "deleteScanOnly"];
 await env.withSecurityRulesDisabled(async (c) => {
@@ -56,6 +56,7 @@ await env.withSecurityRulesDisabled(async (c) => {
   await put("documents/D8", { carrierId: "A", uploadedBy: "dispA", status: "approved", name: "Rate con", kind: "Rate con", loadId: "L4" });
   for (const id of ["D6", "D7", "D8"]) await put(`docFiles/${id}`, { carrierId: "A", uploadedBy: "x", data: "data:image/jpeg;base64,AAAA" });
   // Permission matrix: a fresh paper (and scan) for every role × status × action, and a fresh load per delete check
+  await put("users/dispZero", { role: "dispatcher", name: "Disp Zero", assignedCarriers: [] }); // stays unassigned
   for (const r of MATRIX_ROLES) for (const st of MATRIX_STATUSES) for (const act of MATRIX_ACTIONS) {
     const id = `M_${r}_${st}_${act}`;
     const by = st === "filed" ? "adminA" : "drvA1";

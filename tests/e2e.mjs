@@ -1315,10 +1315,16 @@ await run("Stress: free up space at volume, then no orphans anywhere and the sto
   const backedStillHere = docs.filter((d) => d.backedUpAt && !d.fileFreed && scans.some((f) => f.id === d.id));
   if (backedStillHere.length) throw new Error(`${backedStillHere.length} backed-up scans weren't freed`);
   const held = docs.filter((d) => !d.fileFreed && !d.fileCleared).length;
-  await owner.waitForFunction((n) => {
-    const t = [...document.querySelectorAll(".stat")].find((x) => x.querySelector(".stat-label")?.textContent === "Scans in KeepTrack");
-    return t && t.querySelector(".stat-value").textContent.replace(/,/g, "") === String(n);
-  }, held, { timeout: 30000 });
+  try {
+    await owner.waitForFunction((n) => {
+      const t = [...document.querySelectorAll(".stat")].find((x) => x.querySelector(".stat-label")?.textContent === "Scans in KeepTrack");
+      return t && t.querySelector(".stat-value").textContent.replace(/,/g, "") === String(n);
+    }, held, { timeout: 30000 });
+  } catch (e) {
+    const meter = await card.innerText().catch(() => "?");
+    const freed = docs.filter((d) => d.fileFreed).length, cleared = docs.filter((d) => d.fileCleared).length;
+    throw new Error(`Meter doesn't match: records say ${held} held (${docs.length} total, ${freed} freed, ${cleared} cleared); card says: ${meter.replace(/\s+/g, " ").slice(0, 300)}`);
+  }
 });
 
 for (const [who, p] of Object.entries(pages)) await p.screenshot({ path: `${OUT}/volume-${who}.png` }).catch(() => {});
