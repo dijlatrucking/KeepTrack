@@ -176,7 +176,9 @@ async function open(who, viewport = { width: 1280, height: 900 }) {
   p.setDefaultTimeout(15000);
   p.on("pageerror", (e) => problems.push(`[${who}] page error: ${e.message}`));
   p.on("console", (m) => {
-    if (m.type() === "error" && !/favicon|ERR_FAILED.*fonts/.test(m.text())) problems.push(`[${who}] console: ${m.text().slice(0, 200)}`);
+    // people who are supposed to be turned away get 400/403 answers from sign-in; that's the point
+    const expected = ["intruder", "denied"].includes(who) && /status of 40[03]/.test(m.text());
+    if (m.type() === "error" && !expected && !/favicon|ERR_FAILED.*fonts/.test(m.text())) problems.push(`[${who}] console: ${m.text().slice(0, 200)}`);
     if (/^\[dupe\]/.test(m.text())) console.log(`      [${who}] ${m.text().slice(0, 200)}`);
   });
   pages[who] = p;
