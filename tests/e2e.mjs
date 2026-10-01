@@ -90,6 +90,7 @@ const toast = (p, text) => p.locator(".toast", { hasText: text }).first().waitFo
 const heading = (p, name) => p.getByRole("heading", { name, exact: true }).first().waitFor();
 const nav = (p, label) => p.locator("nav.side a", { hasText: label }).first().click();
 const overflow = async (p) => p.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+const home = async (p) => { await p.evaluate(() => history.replaceState(null, "", location.pathname)); await p.reload(); };
 const iso = (days) => new Date(Date.now() + days * 86400000).toISOString().slice(0, 10);
 
 function noisyPng(w, h) {
@@ -442,7 +443,7 @@ await run(`Seed volume: ${CARRIERS} carriers, ${LOADS} loads, ${PENDING_DOCS} do
 
 await run("Owner Overview loads with the full volume", async () => {
   const t0 = Date.now();
-  await owner.reload();
+  await home(owner);
   await heading(owner, "Overview");
   await owner.locator(".stat-value", { hasText: String(CARRIERS + 1) }).first().waitFor({ timeout: 60000 });
   await owner.locator(".more", { hasText: "of 300" }).first().waitFor({ timeout: 60000 });
@@ -483,7 +484,7 @@ await run("An all-carriers dispatcher loads Tasks across 41 carriers", async () 
     await setDoc(snap.docs[0].ref, { allCarriers: true }, { merge: true });
   });
   const t0 = Date.now();
-  await dispatcher.reload();
+  await home(dispatcher);
   await heading(dispatcher, "Tasks");
   await dispatcher.locator(".more", { hasText: "of 300" }).first().waitFor({ timeout: 60000 });
   await dispatcher.locator("table tbody tr").nth(99).waitFor({ timeout: 60000 });
@@ -492,7 +493,7 @@ await run("An all-carriers dispatcher loads Tasks across 41 carriers", async () 
 
 await run("Carrier's own dashboard is unaffected by other carriers' volume", async () => {
   const t0 = Date.now();
-  await carrier.reload();
+  await home(carrier);
   await heading(carrier, "Overview");
   await carrier.locator(".stat-value", { hasText: "$2,000.00" }).first().waitFor();
   timings.push(["Carrier Overview while system holds volume", Date.now() - t0]);
