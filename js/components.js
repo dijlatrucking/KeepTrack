@@ -5,7 +5,7 @@ import {
 } from "./fb.js";
 import { h, card, table, pill, money, num, fmtDate, ago, field, input, select, btn, formToObj, guard, toast } from "./ui.js";
 import { watch, watchMany, perCarrier, scoped, byNewest } from "./data.js";
-import { sendToDrive, removeFromDrive } from "./drive.js";
+import { sendToDrive, removeFromDrive, fetchFromDrive } from "./drive.js";
 
 const LOAD_STATUSES = [
   { value: "booked", label: "Booked" },
@@ -83,16 +83,26 @@ export async function openDoc(d) {
     if (d.storagePath) {
       url = await getDownloadURL(ref(storage, d.storagePath));
     } else {
-      const snap = await getDoc(doc(db, "docFiles", d.id));
-      if (!snap.exists()) throw new Error("missing");
-      const blob = await (await fetch(snap.data().data)).blob();
+      // Normally the scan is in KeepTrack. After "Free up space" it lives only in Google Drive,
+      // and the Drive script hands it back to anyone allowed to see this document.
+      let data = null;
+      if (!d.fileFreed && !d.fileCleared) {
+        const snap = await getDoc(doc(db, "docFiles", d.id)).catch(() => null);
+        if (snap && snap.exists()) data = snap.data().data;
+      }
+      if (!data) {
+        const meta = d.driveFileId ? d : await getDoc(doc(db, "documents", d.id)).then((s) => (s.exists() ? s.data() : {})).catch(() => ({}));
+        if (!meta.driveFileId || meta.fileCleared) throw new Error(meta.fileCleared ? "This scan was cleared to save space (it had been rejected)." : "missing");
+        data = (await fetchFromDrive(d.id)).data;
+      }
+      const blob = await (await fetch(data)).blob();
       url = URL.createObjectURL(blob);
     }
     if (w) w.location = url; else window.location = url;
   } catch (e) {
     console.error(e);
     if (w) w.close();
-    toast("Couldn't open that file.", "bad");
+    toast(e && e.message && e.message !== "missing" && !/fetch/i.test(e.message) ? e.message : "Couldn't open that file.", "bad");
   }
 }
 
@@ -131,6 +141,7 @@ export async function uploadDoc(ctx, file, meta) {
     name: meta.name || file.name,
     fileType: data.startsWith("data:application/pdf") ? "pdf" : "image",
     hash,
+    size: data.length, // roughly the bytes this scan takes in the database (for the storage meter)
     uploadedBy: ctx.uid,
     uploaderName: ctx.profile.name || "",
     uploaderRole: ctx.profile.role,

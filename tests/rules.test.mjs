@@ -2,7 +2,7 @@
 // Run inside the Firestore emulator:  npx firebase emulators:exec --only firestore --project demo-keeptrack "node rules.test.mjs"
 import { initializeTestEnvironment, assertSucceeds, assertFails } from "@firebase/rules-unit-testing";
 import {
-  doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, addDoc, collection, query, where, writeBatch,
+  doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, addDoc, collection, query, where, writeBatch, getCountFromServer,
 } from "firebase/firestore";
 import { readFileSync, appendFileSync } from "node:fs";
 
@@ -321,6 +321,23 @@ await deny("carrier admin changes the Drive connection", () => setDoc(doc(a, "se
 await deny("dispatcher changes the Drive connection", () => setDoc(doc(s, "settings/app"), { driveUrl: "https://evil.example/exec" }));
 await deny("signed-out visitor reads app settings", () => getDoc(doc(anon(), "settings/app")));
 await allow("owner reads any scan", () => getDoc(doc(o, "docFiles/D3")));
+
+// Storage meter, Drive backup and "free up space"
+await allow("owner counts every document for the storage meter", () => getCountFromServer(collection(o, "documents")));
+await allow("owner records a backup", () => setDoc(doc(o, "settings/backup"), { count: 3, sheetUrl: "https://docs.google.com/x" }));
+await deny("carrier admin fakes a backup record", () => setDoc(doc(a, "settings/backup"), { count: 0 }));
+await deny("driver deletes their own scan", () => deleteDoc(doc(d, "docFiles/D1")));
+await deny("carrier admin deletes a scan", () => deleteDoc(doc(a, "docFiles/D2")));
+await deny("dispatcher deletes an assigned scan", () => deleteDoc(doc(s, "docFiles/D1")));
+await deny("driver marks their own upload as moved to Drive", () => updateDoc(doc(d, "documents/D1"), { fileFreed: true, driveFileId: "x" }));
+await deny("carrier admin marks an approved scan as moved", () => updateDoc(doc(a, "documents/D2"), { fileFreed: true, size: 0 }));
+await allow("owner frees a backed-up scan (deletes the scan, keeps the record)", () => {
+  const b = writeBatch(o);
+  b.delete(doc(o, "docFiles/D3"));
+  b.update(doc(o, "documents/D3"), { fileFreed: true, size: 0, driveFileId: "abc", driveUrl: "https://drive.google.com/x" });
+  return b.commit();
+});
+await allow("carrier B can still read the freed record", () => getDoc(doc(as("adminB"), "documents/D3")));
 
 // ---------- Report ----------
 const failed = results.filter((r) => !r.ok);

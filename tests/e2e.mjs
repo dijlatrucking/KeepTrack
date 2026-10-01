@@ -3,7 +3,7 @@
 // Run:  npx firebase emulators:exec --only firestore,auth --project demo-keeptrack "node e2e.mjs"
 import { chromium } from "playwright";
 import { initializeTestEnvironment } from "@firebase/rules-unit-testing";
-import { doc, setDoc, writeBatch, collection } from "firebase/firestore";
+import { doc, setDoc, writeBatch, collection, getDocs } from "firebase/firestore";
 import { PNG } from "pngjs";
 import { PDFDocument, StandardFonts } from "pdf-lib";
 import { spawn } from "node:child_process";
@@ -45,6 +45,30 @@ const fsGet = async (path, token) => {
   const j = await r.json();
   return Object.fromEntries(Object.entries(j.fields || {}).map(([k, v]) => [k, Object.values(v)[0]]));
 };
+// It also keeps the "Drive" in memory so backups, "free up space" checks and opening a freed scan
+// behave like the real thing.
+const driveFiles = new Map(); // fileId -> { id, docId, data, desc, trashed }
+const backupSheets = new Map(); // sheet name -> rows
+const existingCopy = (docId, meta) => {
+  const f = meta && meta.driveFileId && driveFiles.get(meta.driveFileId);
+  return f && !f.trashed && f.desc.startsWith("KeepTrack " + docId) ? f : null;
+};
+const copyOne = async (docId, token) => {
+  const meta = await fsGet("documents/" + docId, token);
+  const carrier = meta && (await fsGet("carriers/" + meta.carrierId, token));
+  if (!meta || !carrier) return { out: { docId, ok: false, error: "no access" } };
+  const file = await fsGet("docFiles/" + docId, token);
+  let f;
+  if (!file || !file.data) {
+    f = existingCopy(docId, meta);
+    if (!f) return { out: { docId, ok: false, error: "scan not found" }, meta, carrier };
+  } else {
+    f = [...driveFiles.values()].find((x) => x.docId === docId && !x.trashed);
+    if (!f) { f = { id: "file_" + docId, docId, data: file.data, desc: "KeepTrack " + docId, trashed: false }; driveFiles.set(f.id, f); }
+  }
+  const folder = `${carrier.name} / ${meta.uploaderRole === "driver" ? "Drivers / " + meta.uploaderName : "Loads"}`;
+  return { out: { docId, ok: true, fileId: f.id, url: "https://drive.test/" + f.id, folder, size: file && file.data ? file.data.length : 0 }, meta, carrier };
+};
 const driveServer = http.createServer(async (req, res) => {
   const send = (o) => { res.writeHead(200, { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }); res.end(JSON.stringify(o)); };
   if (req.method !== "POST") return send({ ok: true });
@@ -53,12 +77,45 @@ const driveServer = http.createServer(async (req, res) => {
   if (b.ping) return send({ ok: true, ping: "pong" });
   const who = await (await fetch(`http://127.0.0.1:9099/identitytoolkit.googleapis.com/v1/accounts:lookup?key=fake`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ idToken: b.idToken }) })).json();
   if (!who.users) { driveCalls.push({ docId: b.docId, ok: false, why: "token" }); return send({ ok: false, error: "not signed in" }); }
-  const meta = await fsGet("documents/" + b.docId, b.idToken);
-  const file = meta && (await fsGet("docFiles/" + b.docId, b.idToken));
-  const carrier = meta && (await fsGet("carriers/" + meta.carrierId, b.idToken));
-  const ok = !!(meta && file && file.data && carrier);
-  driveCalls.push({ docId: b.docId, ok, role: meta && meta.uploaderRole, kind: meta && meta.kind, carrier: carrier && carrier.name, driver: meta && meta.uploaderName });
-  send(ok ? { ok: true, folder: `${carrier.name} / ${meta.uploaderRole === "driver" ? "Drivers / " + meta.uploaderName : "Loads"}` } : { ok: false, error: "no access" });
+  const uid = who.users[0].localId;
+  if (b.backup || b.verify) {
+    const me = await fsGet("users/" + uid, b.idToken);
+    if (!me || me.role !== "owner") { driveCalls.push({ ok: false, why: "not owner", backup: !!b.backup }); return send({ ok: false, error: "only the owner can do that" }); }
+    const ids = (b.docIds || []).slice(0, 25);
+    if (b.verify) {
+      const results = [];
+      for (const id of ids) results.push({ docId: id, ok: !!existingCopy(id, await fsGet("documents/" + id, b.idToken)) });
+      return send({ ok: true, results });
+    }
+    const rows = backupSheets.get(b.backup) || [];
+    const results = [];
+    for (const id of ids) {
+      const r = await copyOne(id, b.idToken);
+      results.push(r.out);
+      if (r.out.ok) rows.push([r.meta.kind, r.carrier.name, r.meta.loadLabel || "", r.meta.amount || "", r.meta.status, r.out.url, id]);
+    }
+    backupSheets.set(b.backup, rows);
+    return send({ ok: true, sheet: "https://sheets.test/" + encodeURIComponent(b.backup), results });
+  }
+  if (b.fetch) {
+    const meta = await fsGet("documents/" + b.docId, b.idToken);
+    if (!meta) { driveCalls.push({ docId: b.docId, ok: false, fetch: true }); return send({ ok: false, error: "no access to that document" }); }
+    const file = await fsGet("docFiles/" + b.docId, b.idToken);
+    const f = file && file.data ? { data: file.data } : existingCopy(b.docId, meta);
+    driveCalls.push({ docId: b.docId, ok: !!f, fetch: true });
+    return send(f ? { ok: true, data: f.data } : { ok: false, error: "not in Drive" });
+  }
+  if (b.remove) {
+    const meta = await fsGet("documents/" + b.docId, b.idToken);
+    if (!meta || meta.status !== "rejected") return send({ ok: false, error: "only rejected documents are removed" });
+    let n = 0;
+    driveFiles.forEach((f) => { if (f.docId === b.docId && !f.trashed) { f.trashed = true; n++; } });
+    driveCalls.push({ docId: b.docId, ok: true, removed: n });
+    return send({ ok: true, removed: n });
+  }
+  const r = await copyOne(b.docId, b.idToken);
+  driveCalls.push({ docId: b.docId, ok: r.out.ok, role: r.meta && r.meta.uploaderRole, kind: r.meta && r.meta.kind, carrier: r.carrier && r.carrier.name, driver: r.meta && r.meta.uploaderName });
+  send(r.out.ok ? r.out : { ok: false, error: r.out.error });
 });
 await new Promise((r) => driveServer.listen(DRIVE_PORT, "127.0.0.1", r));
 await new Promise((r) => setTimeout(r, 1200));
@@ -697,6 +754,100 @@ await run("Owner denies a sign-up and that person stays locked out", async () =>
   await p.getByText(/doesn't have access/).waitFor();
   await p.context().close();
   delete pages.denied;
+});
+
+// ---------- 7b. Storage, backup to Drive, free up space ----------
+const adminDocs = async (coll) => { let out = []; await seed(async (db) => { out = (await getDocs(collection(db, coll))).docs.map((d) => ({ id: d.id, ...d.data() })); }); return out; };
+const tile = (p, label) => p.locator(".stat", { has: p.locator(".stat-label", { hasText: label }) }).locator(".stat-value");
+let scansBefore = 0;
+await run("Owner sees roughly how much storage the scans take", async () => {
+  await nav(owner, "Settings");
+  const card = owner.locator(".card", { hasText: "Storage & backup" });
+  await card.getByText(/About [\d.,]+ MB/).waitFor();
+  const held = await tile(owner, "Scans in KeepTrack").innerText();
+  scansBefore = Number(held.replace(/,/g, ""));
+  const real = (await adminDocs("docFiles")).length;
+  if (scansBefore !== real) throw new Error(`Meter says ${held} scans, the database holds ${real}`);
+  if (!real) throw new Error("No scans to test with");
+});
+
+await run("Owner backs up every scan to Drive, with an info sheet listing each one", async () => {
+  const card = owner.locator(".card", { hasText: "Storage & backup" });
+  await card.getByRole("button", { name: "Back up to Drive" }).click();
+  await toast(owner, /Backed up \d+ scans? to Google Drive$/);
+  await card.getByRole("link", { name: "Open the backup sheet" }).first().waitFor();
+  const docs = await adminDocs("documents");
+  const shouldBe = docs.filter((d) => d.status !== "rejected");
+  const missing = shouldBe.filter((d) => !d.backedUpAt || !d.driveFileId);
+  if (missing.length) throw new Error(`${missing.length} scans weren't marked as backed up`);
+  const rows = [...backupSheets.values()].flat();
+  if (rows.length !== shouldBe.length) throw new Error(`Backup sheet has ${rows.length} rows, expected ${shouldBe.length}`);
+  if (!rows.some((r) => r[0] === "Lumper" && String(r[3]) === "85")) throw new Error("Lumper receipt info missing from the sheet");
+  await card.getByText(/Last backup:/).waitFor();
+  // a second backup finds nothing new
+  await card.getByRole("button", { name: "Back up to Drive" }).click();
+  await toast(owner, "Everything is already backed up.");
+});
+
+await run("A dispatcher can't run a backup through the Drive script", async () => {
+  const r = await dispatcher.evaluate(async () => {
+    const { auth } = await import("./js/fb.js");
+    const res = await fetch("http://127.0.0.1:5066/", { method: "POST", headers: { "Content-Type": "text/plain" }, body: JSON.stringify({ idToken: await auth.currentUser.getIdToken(), backup: "sneaky", docIds: [] }) });
+    return res.json();
+  });
+  if (r.ok) throw new Error("Dispatcher was allowed to run a backup");
+});
+
+await run("Owner frees up space: scans leave KeepTrack, records stay, and View still opens them from Drive", async () => {
+  const card = owner.locator(".card", { hasText: "Storage & backup" });
+  owner.once("dialog", (d) => d.accept());
+  await card.getByRole("button", { name: "Free up space" }).click();
+  await toast(owner, /Freed about/);
+  const left = await adminDocs("docFiles");
+  if (left.length) throw new Error(`${left.length} scans are still in the database`);
+  const docs = await adminDocs("documents");
+  if (docs.some((d) => !d.fileFreed && !d.fileCleared)) throw new Error("A record wasn't marked as moved");
+  if (docs.some((d) => d.status === "rejected" ? !d.fileCleared : !d.fileFreed)) throw new Error("Rejected scans should be cleared, the rest moved to Drive");
+  const rejected = docs.filter((d) => d.status === "rejected").length;
+  await owner.waitForFunction(() => {
+    const t = [...document.querySelectorAll(".stat")].find((s) => s.querySelector(".stat-label")?.textContent === "Scans in KeepTrack");
+    return t && t.querySelector(".stat-value").textContent === "0";
+  });
+  const moved = Number((await tile(owner, "Moved to Google Drive").innerText()).replace(/,/g, ""));
+  if (moved !== scansBefore - rejected) throw new Error(`Moved ${moved}, expected ${scansBefore - rejected}`);
+  // the carrier opens a moved scan from their vault: it comes back from Drive
+  await nav(carrier, "Documents");
+  const vault = carrier.locator(".card", { hasText: "Document vault" });
+  const row = vault.locator(".row", { hasText: "W-9 Test Carrier A" }).first();
+  const [popup] = await Promise.all([carrier.waitForEvent("popup"), row.getByRole("button", { name: "Open" }).click()]);
+  await popup.waitForURL(/^blob:/, { timeout: 15000 });
+  await popup.close();
+  if (!driveCalls.some((c) => c.fetch && c.ok)) throw new Error("The scan didn't come back from Drive");
+  // records still work: the owner's list marks them, search still finds them
+  await nav(owner, "Documents");
+  await owner.locator("tr", { hasText: "W-9 Test Carrier A" }).first().getByText("In Drive only").waitFor();
+});
+
+await run("Rinse and repeat: a new scan after freeing is counted, backed up and freed again", async () => {
+  await carrier.locator('input[data-role="choose"]').first().setInputFiles({ name: "reg.png", mimeType: "image/png", buffer: noisyPng(900, 1200) });
+  await carrier.locator(".scan-item").first().waitFor();
+  await carrier.getByLabel("Name").fill("Registration Unit 7");
+  await carrier.getByLabel("Category").selectOption("Registrations");
+  await carrier.getByRole("button", { name: "Upload", exact: true }).click();
+  await toast(carrier, "Uploaded");
+  await nav(owner, "Settings");
+  await owner.waitForFunction(() => {
+    const t = [...document.querySelectorAll(".stat")].find((s) => s.querySelector(".stat-label")?.textContent === "Scans in KeepTrack");
+    return t && t.querySelector(".stat-value").textContent === "1";
+  });
+  const card = owner.locator(".card", { hasText: "Storage & backup" });
+  await card.getByRole("button", { name: "Back up to Drive" }).click();
+  await toast(owner, "Backed up 1 scan to Google Drive");
+  if (backupSheets.size < 2) throw new Error("The second backup didn't get its own sheet");
+  owner.once("dialog", (d) => d.accept());
+  await card.getByRole("button", { name: "Free up space" }).click();
+  await toast(owner, /Freed about .* \(1 scan\)/);
+  if ((await adminDocs("docFiles")).length) throw new Error("The new scan is still in the database");
 });
 
 // ---------- 8. Phone layout ----------

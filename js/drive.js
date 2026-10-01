@@ -56,3 +56,18 @@ export async function removeFromDrive(docId) {
   try { return await post(url, { idToken: await auth.currentUser.getIdToken(), docId, remove: true }); }
   catch (e) { console.warn("Drive remove failed", e); return null; }
 }
+
+// Any Drive script call that needs the signed-in user (backup, verify, fetch).
+export async function driveCall(payload) {
+  const url = await driveUrl();
+  if (!url) throw new Error("Connect Google Drive first (Settings → Google Drive).");
+  if (!auth.currentUser) throw new Error("Sign in again.");
+  return post(url, { ...payload, idToken: await auth.currentUser.getIdToken() });
+}
+
+// A scan whose space was freed lives only in Drive; the script checks this user may see it, then sends it back.
+export async function fetchFromDrive(docId) {
+  const url = await driveUrl();
+  if (!url) throw new Error("This scan was moved to Google Drive, and Drive isn't connected right now.");
+  return driveCall({ docId, fetch: true });
+}

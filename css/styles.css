@@ -267,3 +267,9 @@ details.stub summary { display: flex; justify-content: space-between; gap: 12px;
 .dupe-slot { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px 10px; background: var(--accent-soft); border-radius: 10px; }
 .btn-warn { background: var(--accent-soft); color: var(--accent-dark); border-color: var(--accent); }
 .load-exp { padding: 6px 10px; background: var(--ground); border-radius: 8px; }
+
+/* Storage meter */
+.meter { height: 12px; border-radius: 999px; background: var(--ground); border: 1px solid var(--line); overflow: hidden; }
+.meter-fill { height: 100%; width: 0; background: var(--ok); border-radius: 999px; transition: width .4s ease; }
+.meter-fill.warn { background: var(--accent); }
+.meter-fill.bad { background: var(--bad); }

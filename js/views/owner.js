@@ -4,6 +4,7 @@ import { watch, byNewest } from "../data.js";
 import { loadsTable, docsReviewQueue, requestsList, showInvite, staffScanCard, openDoc } from "../components.js";
 import { pickerPage, summaryView, loadsView, expensesView, taxView, carrierSettingsCard } from "../ops.js";
 import { driveUrl, forgetDriveUrl, pingDrive, sendToDrive } from "../drive.js";
+import { storageCard, storageAlert } from "../storage.js";
 import { people as carrierPeople, paystubs as carrierPaystubs } from "./carrier.js";
 
 const allIds = (ctx) => ctx.carriers.map((c) => c.id);
@@ -89,7 +90,7 @@ function overview(ctx, root) {
   ctx.sub(watch(collection(db, "loads"), (r) => { loads = r; draw(); }));
   ctx.sub(watch(collection(db, "loadMoney"), (r) => { moneyRows = r; draw(); }));
   draw();
-  root.append(accessRequests(ctx, { hideWhenEmpty: true }), stats,
+  root.append(accessRequests(ctx, { hideWhenEmpty: true }), storageAlert(), stats,
     h("div", { class: "grid-2" },
       docsReviewQueue(ctx, allIds(ctx), (n) => { pending = n; draw(); }),
       requestsList(ctx, allIds(ctx), { staff: true })),
@@ -181,13 +182,15 @@ function docsView(ctx, root) {
     const shown = docs.filter((d) => !term || [d.name, d.kind, d.category, d.tags, d.loadLabel, d.uploaderName, ctx.carrierName(d.carrierId)].filter(Boolean).join(" ").toLowerCase().includes(term))
       .sort(byNewest).slice(0, 100);
     all.replaceChildren(table([
-      { label: "Document", cell: (d) => h("span", { class: "strong" }, d.name) },
+      { label: "Document", cell: (d) => h("span", null, h("span", { class: "strong" }, d.name), d.fileFreed && d.driveFileId ? h("span", { class: "pill pill-neutral tag" }, "In Drive only") : d.fileCleared ? h("span", { class: "pill pill-neutral tag" }, "Scan cleared") : null) },
       { label: "Type", cell: (d) => d.kind || d.category || "—" },
       { label: "Carrier", cell: (d) => ctx.carrierName(d.carrierId) },
       { label: "From", cell: (d) => d.uploaderName || "—" },
       { label: "Status", cell: (d) => pill(d.status) },
       { label: "", cell: (d) => h("div", { class: "row-meta" }, btn("View", () => openDoc(d)),
-        btn("To Drive", async () => { const j = await sendToDrive(d.id, { quiet: true }); toast(j ? `Copied to Drive: ${j.folder}` : "Couldn't reach Google Drive. Check Settings.", j ? "ok" : "bad"); }, "ghost")) },
+        d.driveUrl ? h("a", { href: d.driveUrl, target: "_blank", rel: "noopener", class: "btn btn-ghost" }, "In Drive")
+          : d.fileFreed || d.fileCleared ? null
+          : btn("To Drive", async () => { const j = await sendToDrive(d.id, { quiet: true }); toast(j ? `Copied to Drive: ${j.folder}` : "Couldn't reach Google Drive. Check Settings.", j ? "ok" : "bad"); }, "ghost")) },
     ], shown, term ? "No matches." : "No documents yet."));
   };
   const search = input("q", { type: "search", placeholder: "Search name, carrier, load, type…", "aria-label": "Search all documents" });
@@ -291,24 +294,14 @@ function settingsView(ctx, root) {
     field("Web app URL", urlIn),
     h("div", { class: "row-inline" }, btn("Save and test", null, "primary", { type: "submit" })),
     msg);
-  const backfill = btn("Copy existing documents to Drive", async () => {
-    if (!(await driveUrl())) return toast("Connect Google Drive first.", "bad");
-    const snap = await getDocs(collection(db, "documents"));
-    if (!confirm(`Copy ${snap.size} document${snap.size === 1 ? "" : "s"} to Google Drive? Files already there are skipped.`)) return;
-    let ok = 0, bad = 0;
-    for (const d of snap.docs) { (await sendToDrive(d.id, { quiet: true })) ? ok++ : bad++; backfill.textContent = `Copying… ${ok + bad}/${snap.size}`; }
-    backfill.textContent = "Copy existing documents to Drive";
-    toast(`Copied ${ok} to Google Drive${bad ? `, ${bad} failed` : ""}`, bad ? "bad" : "ok");
-  }, "ghost");
-  root.append(card("Google Drive", null, status,
+  root.append(storageCard(ctx), card("Google Drive", null, status,
     h("ol", { class: "steps-list" },
       h("li", null, "Tap ", h("b", null, "Copy the script"), " below."),
       h("li", null, "Open ", h("a", { href: "https://script.google.com/home/projects/create", target: "_blank", rel: "noopener" }, "script.google.com → New project"), ", delete what's there and paste."),
       h("li", null, "Tap ", h("b", null, "Deploy → New deployment"), ", pick type ", h("b", null, "Web app"), ". Execute as: ", h("b", null, "Me"), ". Who has access: ", h("b", null, "Anyone"), ". Deploy, then allow access when Google asks."),
       h("li", null, "Copy the ", h("b", null, "Web app URL"), " and paste it here, then tap ", h("b", null, "Save and test"), ".")),
     copyScript, form,
-    h("p", { class: "muted small" }, "Folders: KeepTrack / Carrier / Drivers / Driver name / (Load folders, Receipts) · Carrier / Loads / Load · Carrier / Company / Insurance, W-9… · Carrier / Receipts."),
-    h("div", null, backfill)));
+    h("p", { class: "muted small" }, "Folders: KeepTrack / Carrier / Drivers / Driver name / (Load folders, Receipts) · Carrier / Loads / Load · Carrier / Company / Insurance, W-9… · Carrier / Receipts · Backups (one sheet per backup).")));
 }
 
 export default [

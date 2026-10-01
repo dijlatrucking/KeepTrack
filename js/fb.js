@@ -21,7 +21,8 @@ export {
 
 export {
   collection, doc, getDoc, getDocs, addDoc, setDoc, updateDoc, deleteDoc,
-  query, where, onSnapshot, serverTimestamp, writeBatch, Timestamp
+  query, where, onSnapshot, serverTimestamp, writeBatch, Timestamp,
+  getAggregateFromServer, getCountFromServer, sum, count, deleteField
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
 export { ref, uploadBytes, getDownloadURL } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-storage.js";
