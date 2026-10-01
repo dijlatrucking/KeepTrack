@@ -228,7 +228,7 @@ await run("Carrier adds a truck", async () => {
   await nav(carrier, "Drivers & trucks");
   await carrier.locator("summary", { hasText: "Add truck" }).click();
   await carrier.getByLabel("Unit #").fill("Unit 7");
-  await carrier.getByLabel("Type", { exact: true }).selectOption("Reefer");
+  await carrier.locator('select[name="type"]').selectOption("Reefer");
   await carrier.getByRole("button", { name: "Add truck", exact: true }).click();
   await toast(carrier, "Truck added");
   await carrier.locator("td", { hasText: "Unit 7" }).first().waitFor();
