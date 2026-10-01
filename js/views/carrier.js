@@ -1,10 +1,11 @@
 import { db, collection, doc, addDoc, setDoc, updateDoc, deleteDoc, query, where, serverTimestamp } from "../fb.js";
 import { h, card, table, stat, money, num, field, input, select, btn, formToObj, guard, inviteCode, pill, fmtDate, ago, toDate, toast } from "../ui.js";
 import { watch, byNewest, driverPayFor } from "../data.js";
-import { lane, shortId, openDoc, scanPicker, saveScans } from "../components.js";
+import { lane, shortId, openDoc, scanPicker, saveScans, docsReviewQueue, showInvite } from "../components.js";
 import { summaryView, loadsView, expensesView, taxView, carrierSettingsCard } from "../ops.js";
 
-const cid = (ctx) => ctx.profile.carrierId;
+// The carrier these pages work on: the carrier admin's own company, or the one the owner picked.
+const cid = (ctx) => ctx.cid || ctx.profile.carrierId;
 const q = (ctx, coll, ...w) => query(collection(db, coll), where("carrierId", "==", cid(ctx)), ...w);
 const PAY_LABEL = { perMile: "per mile", percent: "% of load", flat: "flat per load" };
 const payText = (d) => (d.payRate ? (d.payType === "percent" ? `${d.payRate}% of load` : `$${d.payRate} ${PAY_LABEL[d.payType || "perMile"]}`) : "Not set");
@@ -30,29 +31,39 @@ function people(ctx, root) {
       { value: "percent", label: "% of load", selected: d.payType === "percent" },
       { value: "flat", label: "Flat per load", selected: d.payType === "flat" }]);
     const truckSel = select("truckId", [{ value: "", label: "No truck" }, ...trucks.map((t) => ({ value: t.id, label: t.unit, selected: t.id === d.truckId }))]);
-    const edit = h("form", { class: "inline-form", hidden: !openEdits.has(d.id), onSubmit: async (e) => {
+    const edit = h("form", { class: "edit-panel", hidden: !openEdits.has(d.id), onSubmit: async (e) => {
       e.preventDefault();
       const f = formToObj(edit);
       const t = trucks.find((x) => x.id === f.truckId);
-      await guard(() => updateDoc(doc(db, "users", d.id), { payType: f.payType, payRate: num(f.payRate), truckId: t ? t.id : null, truckUnit: t ? t.unit : null }), "Driver saved");
+      const data = { payType: f.payType, payRate: num(f.payRate), truckId: t ? t.id : null, truckUnit: t ? t.unit : null };
+      if (d.manual) Object.assign(data, { name: f.name.trim() || d.name, phone: f.phone.trim() });
+      const ok = await guard(() => updateDoc(doc(db, "users", d.id), data), "Driver saved");
+      if (ok !== null) { openEdits.delete(d.id); edit.hidden = true; }
     } },
-      field("Pay type", typeSel), field("Rate", input("payRate", { type: "number", step: "0.01", min: "0", value: d.payRate ?? "" })),
-      field("Truck", truckSel), btn("Save", null, "dark", { type: "submit" }));
+      h("div", { class: "form-grid" },
+        d.manual ? field("Name", input("name", { value: d.name || "" })) : null,
+        d.manual ? field("Phone", input("phone", { type: "tel", value: d.phone || "" })) : null,
+        field("Pay type", typeSel),
+        field("Rate", input("payRate", { type: "number", step: "0.01", min: "0", inputmode: "decimal", placeholder: "e.g. 0.65", value: d.payRate ?? "" })),
+        field("Truck", truckSel)),
+      h("div", { class: "row-inline" }, btn("Save", null, "dark", { type: "submit" }), btn("Cancel", () => { openEdits.delete(d.id); edit.hidden = true; }, "ghost")));
     return h("div", { class: "row col" },
       h("div", { class: "row-top" },
-        h("div", null, h("div", { class: "strong" }, d.name || d.email), h("div", { class: "muted small" }, [d.truckUnit, payText(d)].filter(Boolean).join(" · "))),
+        h("div", null, h("div", { class: "strong" }, d.name || d.email, d.manual ? h("span", { class: "pill pill-neutral tag" }, "No app login") : null), h("div", { class: "muted small" }, [d.truckUnit, payText(d), d.phone].filter(Boolean).join(" · "))),
         h("div", { class: "row-meta" },
           btn("Edit", () => { edit.hidden = !edit.hidden; edit.hidden ? openEdits.delete(d.id) : openEdits.add(d.id); }),
           btn("Remove", async () => {
-            if (!confirm(`Remove ${d.name || d.email}? They lose access to your company right away.`)) return;
+            if (!confirm(d.manual ? `Remove ${d.name}?` : `Remove ${d.name || d.email}? They lose access to the company right away.`)) return;
             await guard(() => deleteDoc(doc(db, "users", d.id)), "Driver removed");
           }, "ghost"))),
       edit);
-  })) : h("p", { class: "empty" }, "No drivers yet. Invite one below."));
+  })) : h("p", { class: "empty" }, "No drivers yet. Invite one, or add one by hand."));
 
   let driverCache = [];
+  const manualTruck = select("truckId", [{ value: "", label: "No truck" }]);
   ctx.sub(watch(q(ctx, "trucks"), (r) => {
     trucks = r.sort((a, b) => (a.unit || "").localeCompare(b.unit || ""));
+    manualTruck.replaceChildren(h("option", { value: "" }, "No truck"), ...trucks.map((t) => h("option", { value: t.id }, t.unit)));
     drawDrivers(driverCache);
     trucksBody.replaceChildren(table([
       { label: "Unit", cell: (t) => h("span", { class: "strong" }, t.unit) },
@@ -79,15 +90,36 @@ function people(ctx, root) {
     field("Registration expires", input("regExpires", { type: "date" })),
     h("div", { class: "form-actions" }, btn("Add truck", null, "primary", { type: "submit" })));
 
+  // A driver added by hand has no app login (owner-operators, or drivers who don't use the app).
+  // They can still be put on loads, given a truck and pay, and get paystubs.
+  const manualForm = h("form", { class: "stack", onSubmit: async (e) => {
+    e.preventDefault();
+    const f = formToObj(manualForm);
+    if (!f.name.trim()) return;
+    const t = trucks.find((x) => x.id === f.truckId);
+    const id = "manual_" + Math.random().toString(36).slice(2, 12) + Date.now().toString(36);
+    const ok = await guard(() => setDoc(doc(db, "users", id), {
+      role: "driver", manual: true, carrierId: cid(ctx), name: f.name.trim(), phone: f.phone.trim(),
+      payType: f.payType, payRate: num(f.payRate), truckId: t ? t.id : null, truckUnit: t ? t.unit : null, createdAt: serverTimestamp(),
+    }), "Driver added");
+    if (ok !== null) { manualForm.reset(); manualBox.open = false; }
+  } },
+    h("div", { class: "form-grid" },
+      field("Name", input("name", { required: true, placeholder: "Driver's name" })),
+      field("Phone", input("phone", { type: "tel" })),
+      field("Pay type", select("payType", [{ value: "perMile", label: "Per mile" }, { value: "percent", label: "% of load" }, { value: "flat", label: "Flat per load" }])),
+      field("Rate", input("payRate", { type: "number", step: "0.01", min: "0", inputmode: "decimal", placeholder: "e.g. 0.65" })),
+      field("Truck", manualTruck)),
+    h("div", null, btn("Add driver", null, "primary", { type: "submit" })),
+    h("p", { class: "muted small" }, "No app login. To give them the app, use Invite driver instead."));
+  const manualBox = h("details", { class: "add" }, h("summary", null, "+ Add a driver by hand"), manualForm);
+
   root.append(
     card("Drivers", btn("Invite driver", async () => {
       const code = inviteCode();
       const ok = await guard(() => setDoc(doc(db, "invites", code), { role: "driver", carrierId: cid(ctx), carrierName: ctx.carrierName(cid(ctx)), used: false, createdBy: ctx.uid, createdAt: serverTimestamp() }));
-      if (ok !== null) {
-        const { showInvite } = await import("../components.js");
-        inviteSlot.replaceChildren(showInvite(code, "a driver"));
-      }
-    }, "primary"), inviteSlot, driversBody),
+      if (ok !== null) inviteSlot.replaceChildren(showInvite(code, "a driver"));
+    }, "primary"), inviteSlot, driversBody, manualBox),
     card("Trucks", null, trucksBody, h("details", { class: "add" }, h("summary", null, "+ Add truck"), truckForm)));
 }
 
@@ -141,7 +173,7 @@ function documents(ctx, root) {
   const search = input("q", { type: "search", placeholder: "Search: insurance, Unit 3, CDL, load…", "aria-label": "Search documents" });
   search.addEventListener("input", () => { term = search.value; draw(); });
   draw();
-  root.append(card("Upload a document", null, form), card("Document vault", null, search, chips, listBody));
+  root.append(docsReviewQueue(ctx, [cid(ctx)]), card("Upload a document", null, form), card("Document vault", null, search, chips, listBody));
 }
 
 function requests(ctx, root) {
@@ -219,6 +251,8 @@ function paystubs(ctx, root) {
   ], r.sort(byNewest), "No paystubs issued yet."))));
   root.append(card("Issue a paystub", null, form), card("Issued paystubs", null, issued));
 }
+
+export { people, documents, paystubs };
 
 const mine = (ctx) => [ctx.profile.carrierId];
 

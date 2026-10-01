@@ -34,7 +34,7 @@ function doPost(e) {
     if (!file || !file.data) return reply({ ok: false, error: "scan not found" });
     const carrier = firestoreGet("carriers/" + meta.carrierId, body.idToken) || {};
 
-    // 3) Work out the folder.
+    // 3) Work out the folder (same place the file was first saved).
     const carrierName = clean(carrier.name || "Carrier " + String(meta.carrierId).slice(0, 6));
     const kind = String(meta.kind || meta.category || "Document");
     const isReceipt = /receipt|lumper|fuel|repair|toll|scale|expense/i.test(kind) || /receipt/i.test(String(meta.category || ""));
@@ -58,6 +58,13 @@ function doPost(e) {
     const ext = m[1] === "application/pdf" ? ".pdf" : ".jpg";
     const name = clean(meta.name || kind) + " · " + body.docId.slice(0, 6) + ext;
     const existing = folder.getFilesByName(name);
+    if (body.remove) {
+      // Only documents that were actually rejected in KeepTrack get trashed.
+      if (meta.status !== "rejected") return reply({ ok: false, error: "only rejected documents are removed" });
+      let n = 0;
+      while (existing.hasNext()) { existing.next().setTrashed(true); n++; }
+      return reply({ ok: true, removed: n, folder: path.join(" / ") });
+    }
     const saved = existing.hasNext() ? existing.next() : folder.createFile(Utilities.newBlob(Utilities.base64Decode(m[2]), m[1], name));
     if (meta.note || meta.amount) saved.setDescription([meta.amount ? "$" + meta.amount : "", meta.note || ""].filter(String).join(" · "));
     return reply({ ok: true, url: saved.getUrl(), folder: path.join(" / ") });

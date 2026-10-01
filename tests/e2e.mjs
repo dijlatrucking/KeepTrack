@@ -152,6 +152,7 @@ async function textPdf(lines) {
   lines.forEach((l, i) => page.drawText(l, { x: 40, y: 750 - i * 18, size: 11, font }));
   return Buffer.from(await pdf.save());
 }
+const SAME_BOL = noisyPng(2400, 3200);
 const tinyPdf = Buffer.from("%PDF-1.1\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj 2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj 3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 200]>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF");
 
 // ---------- 1. Owner signs in ----------
@@ -342,7 +343,7 @@ await run("Driver taps Picked up", async () => {
 
 await run("Driver snaps a BOL: a 7.7-megapixel photo gets shrunk and uploaded", async () => {
   const t0 = Date.now();
-  await driver.locator("input[type=file]").first().setInputFiles({ name: "bol.png", mimeType: "image/png", buffer: noisyPng(2400, 3200) });
+  await driver.locator("input[type=file]").first().setInputFiles({ name: "bol.png", mimeType: "image/png", buffer: SAME_BOL });
   await toast(driver, "Sent to dispatch");
   timings.push(["Shrink + upload a 7.7 MP worst-case photo", Date.now() - t0]);
 });
@@ -358,6 +359,7 @@ await run("Driver sends a $85 lumper receipt from the road", async () => {
   const R = driver.locator(".card", { hasText: "Lumpers, repairs, tolls" });
   await R.getByLabel("Type").selectOption("Lumper");
   await R.getByLabel("Amount ($)").fill("85");
+  await R.locator('select[name="loadId"]').selectOption({ index: 1 });
   await R.getByLabel("Note").fill("Lumper at Walmart DC");
   await R.locator('input[data-role="camera"]').setInputFiles({ name: "lumper.png", mimeType: "image/png", buffer: noisyPng(800, 1100) });
   await R.locator(".scan-item").first().waitFor();
@@ -369,16 +371,54 @@ await run("Driver sends a $85 lumper receipt from the road", async () => {
   if (!driveCalls.some((c) => c.kind === "Lumper" && c.ok)) throw new Error("Lumper receipt didn't reach Drive");
 });
 
-await run("Carrier can NOT see the BOL yet (it hasn't been reviewed)", async () => {
+await run("The driver's BOL reaches the carrier's review queue right away (not the vault yet)", async () => {
   await nav(carrier, "Documents");
   await carrier.getByRole("heading", { name: "Document vault" }).waitFor();
-  await carrier.waitForTimeout(1500);
-  if (await carrier.getByText(/BOL · #/).count()) throw new Error("Unreviewed BOL visible to carrier");
+  const queue = carrier.locator(".card", { hasText: "Docs to review" });
+  await queue.locator(".row", { hasText: "BOL · #" }).first().waitFor();
+  const vault = carrier.locator(".card", { hasText: "Document vault" });
+  if (await vault.getByText(/BOL · #/).count()) throw new Error("Unreviewed BOL already in the vault");
+});
+
+await run("Driver re-sends the same BOL photo: it isn't saved twice", async () => {
+  const again = driver.locator("input[type=file]").first();
+  await again.setInputFiles({ name: "bol.png", mimeType: "image/png", buffer: SAME_BOL });
+  await toast(driver, "Already on file");
 });
 
 await run("Dispatcher sees the lumper receipt with its amount in the review queue", async () => {
   await nav(dispatcher, "Tasks");
   await dispatcher.locator(".row", { hasText: "Lumper receipt" }).filter({ hasText: "$85.00" }).first().waitFor();
+});
+
+await run("Driver sends the same $85 lumper again (new photo): it's flagged as a possible duplicate", async () => {
+  await nav(driver, "Loads");
+  const R = driver.locator(".card", { hasText: "Lumpers, repairs, tolls" });
+  await R.getByLabel("Type").selectOption("Lumper");
+  await R.getByLabel("Amount ($)").fill("85");
+  await R.locator('input[data-role="camera"]').setInputFiles({ name: "lumper2.png", mimeType: "image/png", buffer: noisyPng(800, 1100) });
+  await R.locator(".scan-item").first().waitFor();
+  await R.getByRole("button", { name: "Send receipt" }).click();
+  await toast(driver, "Receipt sent to dispatch");
+  const queue = carrier.locator(".card", { hasText: "Docs to review" });
+  await queue.locator(".row", { hasText: "Lumper receipt" }).filter({ hasText: "Possible duplicate" }).first().waitFor();
+});
+
+await run("Carrier rejects the duplicate, approves the real lumper, and it becomes an expense on the load", async () => {
+  const queue = carrier.locator(".card", { hasText: "Docs to review" });
+  const lumpers = queue.locator(".row", { hasText: "Lumper receipt" });
+  const before = await lumpers.count();
+  await lumpers.filter({ hasNotText: "Boise" }).filter({ hasText: "Possible duplicate" }).first().getByRole("button", { name: "Reject duplicate" }).click();
+  await toast(carrier, "Duplicate rejected");
+  const t0 = Date.now();
+  while ((await lumpers.count()) >= before && Date.now() - t0 < 10000) await carrier.waitForTimeout(200);
+  await lumpers.filter({ hasText: "Boise" }).first().getByRole("button", { name: "Approve + add expense" }).click();
+  await toast(carrier, "Approved and added to expenses");
+  await nav(carrier, "Expenses");
+  await carrier.locator(".chip", { hasText: "All time" }).first().click();
+  await carrier.locator(".items").first().locator(".item", { hasText: "Lumper" }).filter({ hasText: "Load #" }).first().waitFor();
+  await nav(carrier, "Loads");
+  await carrier.locator(".item", { hasText: "Boise, ID → Denver, CO" }).first().getByText("Load expenses $85.00").waitFor();
 });
 
 await run("Dispatcher sees the BOL in the review queue, opens the scan, and approves it", async () => {
@@ -470,9 +510,9 @@ await run("Driver sees the $300 paystub", async () => {
   await driver.locator("details.stub", { hasText: "$300.00" }).first().waitFor();
 });
 
-await run("Carrier money adds up: $2,000 gross − $160 fee − $300 driver = $1,540 profit", async () => {
+await run("Carrier money adds up: $2,000 gross − $160 fee − $300 driver − $85 lumper = $1,455 profit", async () => {
   await nav(carrier, "Summary");
-  for (const v of ["$2,000.00", "$160.00", "$300.00", "$1,540.00"]) await carrier.locator(".stat-value", { hasText: v }).first().waitFor();
+  for (const v of ["$2,000.00", "$160.00", "$300.00", "$1,455.00"]) await carrier.locator(".stat-value", { hasText: v }).first().waitFor();
 });
 
 await run("Owner marks the fee paid and the carrier's 'owed' drops to $0 live", async () => {
@@ -573,6 +613,23 @@ await run("Carrier books its own load (no dispatcher, no dispatch fee)", async (
   await F.getByRole("button", { name: "Save load", exact: true }).click();
   await toast(carrier, "Load booked");
   await carrier.locator(".item-lane", { hasText: "Nampa, ID → Salt Lake City, UT" }).first().waitFor();
+});
+
+await run("Owner adds a truck and a hand-added driver for the carrier", async () => {
+  await nav(owner, "Drivers & trucks");
+  await owner.locator("summary", { hasText: "Add truck" }).click();
+  await owner.getByLabel("Unit #").fill("Unit 9");
+  await owner.getByRole("button", { name: "Add truck", exact: true }).click();
+  await toast(owner, "Truck added");
+  await owner.locator("summary", { hasText: "Add a driver by hand" }).click();
+  const F = owner.locator("details", { hasText: "Add a driver by hand" });
+  await F.getByLabel("Name").fill("Sam Owner-Op");
+  await F.getByLabel("Rate").fill("0.65");
+  await F.locator('select[name="truckId"]').selectOption({ label: "Unit 9" });
+  await F.getByRole("button", { name: "Add driver" }).click();
+  await toast(owner, "Driver added");
+  await owner.locator(".row", { hasText: "Sam Owner-Op" }).getByText("No app login").waitFor();
+  await carrier.locator(".row", { hasText: "Sam Owner-Op" }).first().waitFor({ state: "attached" }).catch(() => {});
 });
 
 await run("Owner sees every carrier or picks one: Summary, Expenses, Accounts", async () => {

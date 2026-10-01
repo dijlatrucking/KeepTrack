@@ -5,7 +5,7 @@ import {
 } from "./fb.js";
 import { h, card, table, pill, money, num, fmtDate, ago, field, input, select, btn, formToObj, guard, toast } from "./ui.js";
 import { watch, watchMany, perCarrier, scoped, byNewest } from "./data.js";
-import { sendToDrive } from "./drive.js";
+import { sendToDrive, removeFromDrive } from "./drive.js";
 
 const LOAD_STATUSES = [
   { value: "booked", label: "Booked" },
@@ -96,9 +96,33 @@ export async function openDoc(d) {
   }
 }
 
+// A fingerprint of the saved file. The same PDF or photo always gives the same fingerprint,
+// so the same paper uploaded twice (by a driver, dispatch or the carrier) can be spotted.
+export async function fingerprint(data) {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(data));
+  return Array.from(new Uint8Array(buf), (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+// Is this exact file already on file for the carrier? Drivers can only check their own uploads.
+async function alreadyOnFile(ctx, carrierId, hash) {
+  try {
+    const w = [where("carrierId", "==", carrierId), where("hash", "==", hash)];
+    if (ctx.profile.role === "driver") w.push(where("uploadedBy", "==", ctx.uid));
+    const snap = await getDocs(query(collection(db, "documents"), ...w));
+    const hit = snap.docs.map((d) => ({ id: d.id, ...d.data() })).find((d) => d.status !== "rejected");
+    return hit || null;
+  } catch (e) { return null; }
+}
+
 export async function uploadDoc(ctx, file, meta) {
   if (!file) throw new Error("Choose a file or take a photo first.");
   const data = await toScan(file);
+  const hash = await fingerprint(data);
+  const dupe = await alreadyOnFile(ctx, meta.carrierId, hash);
+  if (dupe) {
+    toast(`Already on file: “${dupe.name}”${dupe.uploaderName ? " from " + dupe.uploaderName : ""}. Not saved twice.`, "info");
+    return { id: dupe.id, duplicate: true };
+  }
   const docRef = doc(collection(db, "documents"));
   const batch = writeBatch(db);
   const clean = Object.fromEntries(Object.entries(meta).filter(([, v]) => v !== undefined));
@@ -106,6 +130,7 @@ export async function uploadDoc(ctx, file, meta) {
     ...clean,
     name: meta.name || file.name,
     fileType: data.startsWith("data:application/pdf") ? "pdf" : "image",
+    hash,
     uploadedBy: ctx.uid,
     uploaderName: ctx.profile.name || "",
     uploaderRole: ctx.profile.role,
@@ -220,25 +245,109 @@ export function staffScanCard(ctx) {
   return card("Scan a document", null, form);
 }
 
-// Pending BOLs/receipts for staff to approve. Approved docs become visible to the carrier admin.
+// Receipt types → expense categories
+const RECEIPT_CAT = { Lumper: "Lumper", Fuel: "Fuel", Repair: "Repairs", Tolls: "Tolls", Scale: "Scale", Parking: "Parking", "Food / lodging": "Other", Other: "Other" };
+const isReceiptDoc = (d) => d.kind === "Lumper" || d.kind === "Receipt" || d.category === "Receipts";
+
+// Look for a copy of this paper already on file: the exact same file, the same kind of paper on the
+// same load (two BOLs for one load), or a receipt with the same amount on the same load/day.
+const dupeCache = new Map();
+export function findDuplicate(d) {
+  if (dupeCache.has(d.id)) return dupeCache.get(d.id);
+  const run = (async () => {
+    const base = [where("carrierId", "==", d.carrierId)];
+    const tries = [];
+    if (d.hash) tries.push(["exact", [...base, where("hash", "==", d.hash)]]);
+    if (d.loadId && ["BOL", "POD", "Rate con", "Lumper"].includes(d.kind)) tries.push(["load", [...base, where("loadId", "==", d.loadId), where("kind", "==", d.kind)]]);
+    if (d.amount) tries.push(["amount", [...base, where("amount", "==", d.amount)]]);
+    for (const [why, w] of tries) {
+      try {
+        const snap = await getDocs(query(collection(db, "documents"), ...w));
+        const day = (x) => (x.createdAt && x.createdAt.seconds ? Math.floor(x.createdAt.seconds / 86400) : 0);
+        const other = snap.docs.map((x) => ({ id: x.id, ...x.data() }))
+          .filter((x) => x.id !== d.id && x.status !== "rejected")
+          .filter((x) => why !== "amount" || (d.loadId ? x.loadId === d.loadId : Math.abs(day(x) - day(d)) <= 2))
+          .sort(byNewest).pop();
+        if (other) return { why, other };
+      } catch (e) { /* missing index or no access: just don't flag */ }
+    }
+    cleanChecks.add(d.id);
+    return null;
+  })();
+  dupeCache.set(d.id, run);
+  return run;
+}
+const cleanChecks = new Set();
+function forgetCleanChecks() { cleanChecks.forEach((id) => dupeCache.delete(id)); cleanChecks.clear(); }
+const dupeText = (r) => r.why === "exact" ? `Exact copy of “${r.other.name}”` : r.why === "load" ? `This load already has a ${r.other.kind}` : `Same amount already sent`;
+
+// Turn a driver's receipt into an expense (owner / carrier only), so nobody types it twice.
+export async function receiptToExpense(ctx, d) {
+  let amount = num(d.amount);
+  if (!amount) {
+    const a = prompt(`Amount for “${d.name}”?`);
+    if (a === null) return null;
+    amount = num(a);
+    if (!amount) { toast("Enter an amount to add it as an expense.", "bad"); return null; }
+  }
+  let truckId = null;
+  try {
+    if (d.loadId) { const l = await getDoc(doc(db, "loads", d.loadId)); truckId = l.exists() ? l.data().truckId || null : null; }
+    if (!truckId && d.uploadedBy) { const u = await getDoc(doc(db, "users", d.uploadedBy)); truckId = u.exists() ? u.data().truckId || null : null; }
+  } catch (e) {}
+  const created = d.createdAt && d.createdAt.toDate ? d.createdAt.toDate() : new Date();
+  const date = `${created.getFullYear()}-${String(created.getMonth() + 1).padStart(2, "0")}-${String(created.getDate()).padStart(2, "0")}`;
+  const ref = await addDoc(collection(db, "expenses"), {
+    carrierId: d.carrierId, cat: RECEIPT_CAT[d.receiptType] || (d.kind === "Lumper" ? "Lumper" : "Other"), amount: Math.round(amount * 100) / 100,
+    truckId, date, paidWith: "own", gallons: 0, state: "", note: [d.uploaderName, d.note].filter(Boolean).join(" · "),
+    loadId: d.loadId || null, loadLabel: d.loadLabel || null, docId: d.id, createdAt: serverTimestamp(),
+  });
+  await updateDoc(doc(db, "documents", d.id), { status: "approved", reviewedBy: ctx.uid, reviewedAt: serverTimestamp(), expenseId: ref.id, ...(d.amount ? {} : { amount: Math.round(amount * 100) / 100 }) });
+  return ref.id;
+}
+
+// A driver's papers and receipts go to dispatch AND the carrier at the same time. Whoever gets to it
+// first approves it, or rejects it (a duplicate, a bad photo). The owner sees everything.
 export function docsReviewQueue(ctx, carrierIds, onCount) {
   const body = h("div");
-  const box = card("Docs to review", h("span", { class: "muted small" }, "Approved docs pass up to the carrier + owner"), body);
+  const canExpense = ["owner", "carrierAdmin"].includes(ctx.profile.role);
+  const box = card("Docs to review", h("span", { class: "muted small" }, "From drivers · goes to the carrier and dispatch"), body);
   let limit = 25, last = [];
+  const reject = async (d, reason) => {
+    const ok = await guard(() => updateDoc(doc(db, "documents", d.id), { status: "rejected", rejectReason: reason, reviewedBy: ctx.uid, reviewedAt: serverTimestamp() }), reason === "duplicate" ? "Duplicate rejected" : "Rejected");
+    if (ok !== null) removeFromDrive(d.id);
+  };
   const draw = (docs) => {
     last = docs;
     docs.sort((a, b) => -byNewest(a, b)); // oldest first: first in, first reviewed
     onCount && onCount(docs.length);
-    body.replaceChildren(docs.length ? h("div", { class: "list" }, docs.slice(0, limit).map((d) => h("div", { class: "row" },
-      h("div", { class: "badge-kind" }, (d.kind || "DOC").slice(0, 4).toUpperCase()),
-      h("div", { class: "grow" },
-        h("div", { class: "strong" }, d.name),
-        h("div", { class: "muted small" }, [d.uploaderName, ctx.carrierName(d.carrierId), d.loadLabel, d.amount ? money(d.amount) : null, ago(d.createdAt)].filter(Boolean).join(" · ")),
-        d.note ? h("div", { class: "small" }, d.note) : null),
-      btn("View", () => openDoc(d)),
-      btn("Approve", () => guard(() => updateDoc(doc(db, "documents", d.id), { status: "approved", reviewedBy: ctx.uid, reviewedAt: serverTimestamp() }), "Approved"), "ok"),
-      btn("Reject", () => guard(() => updateDoc(doc(db, "documents", d.id), { status: "rejected", reviewedBy: ctx.uid, reviewedAt: serverTimestamp() }), "Rejected"), "ghost"),
-    )), moreButton(docs.length, limit, () => { limit += 25; draw(last); })) : h("p", { class: "empty" }, "All caught up."));
+    forgetCleanChecks(); // something new may have arrived that duplicates an older one
+    body.replaceChildren(docs.length ? h("div", { class: "list" }, docs.slice(0, limit).map((d) => {
+      const flag = h("div", { class: "dupe-slot" });
+      const dupBtn = btn("Reject duplicate", () => reject(d, "duplicate"), "warn", { hidden: true });
+      findDuplicate(d).then((r) => {
+        if (!r) return;
+        flag.replaceChildren(h("span", { class: "pill pill-warn" }, "Possible duplicate"), " ", h("span", { class: "small" }, dupeText(r)),
+          r.other.uploaderName ? h("span", { class: "muted small" }, ` · from ${r.other.uploaderName}`) : null,
+          " ", h("button", { type: "button", class: "btn-link small", onClick: () => openDoc(r.other) }, "View the other"));
+        dupBtn.hidden = false;
+      });
+      return h("div", { class: "row col review-row" },
+        h("div", { class: "row-top" },
+          h("div", { class: "review-main" },
+            h("div", { class: "badge-kind" }, (d.kind || "DOC").slice(0, 4).toUpperCase()),
+            h("div", { class: "grow" },
+              h("div", { class: "strong" }, d.name),
+              h("div", { class: "muted small" }, [d.uploaderName, ctx.carrierName(d.carrierId), d.loadLabel, d.amount ? money(d.amount) : null, ago(d.createdAt)].filter(Boolean).join(" · ")),
+              d.note ? h("div", { class: "small" }, d.note) : null))),
+        flag,
+        h("div", { class: "acts" },
+          btn("View", () => openDoc(d)),
+          canExpense && isReceiptDoc(d) ? btn("Approve + add expense", () => guard(() => receiptToExpense(ctx, d), "Approved and added to expenses"), "ok") : null,
+          btn("Approve", () => guard(() => updateDoc(doc(db, "documents", d.id), { status: "approved", reviewedBy: ctx.uid, reviewedAt: serverTimestamp() }), "Approved"), canExpense && isReceiptDoc(d) ? "ghost" : "ok"),
+          dupBtn,
+          btn("Reject", () => reject(d, "rejected"), "ghost")));
+    }), moreButton(docs.length, limit, () => { limit += 25; draw(last); })) : h("p", { class: "empty" }, "All caught up."));
   };
   ctx.sub(watchMany(scoped(ctx, "documents", carrierIds, where("status", "==", "pending")), draw));
   return box;

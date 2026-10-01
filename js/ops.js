@@ -83,6 +83,7 @@ export function pickerPage(ctx, root, key, render, { allowAll = true, requireOne
     const ids = v === "all" ? ctx.carriers.map((c) => c.id) : v ? [v] : [];
     sub.global = v === "all" ? ctx.global : false;
     sub.oneCarrier = ids.length === 1 ? ctx.carriers.find((c) => c.id === ids[0]) : null;
+    sub.cid = ids.length === 1 ? ids[0] : null; // carrier pages (drivers, trucks, paystubs) work on this one
     body.replaceChildren();
     if (!ids.length) { body.append(card(null, null, h("p", { class: "empty" }, "No carriers yet."))); return; }
     render(sub, body, ids);
@@ -515,6 +516,13 @@ export function loadsView(ctx, root, ids) {
         h("div", { class: "item-right" }, pill(l.status, stageLabel(l.status)), showFee ? h("b", { class: "mono" }, money(m.rate)) : null)),
       h("div", { class: "muted small" }, meta),
       showFee && m.dispatchFee ? h("div", { class: "muted small" }, `Dispatch fee ${money(m.dispatchFee)}${mon && mon.feePaid ? " · paid" : ""}`) : null,
+      (() => {
+        const linked = (st.expenses || []).filter((e) => e.loadId === l.id);
+        if (!linked.length) return null;
+        const tot = linked.reduce((s2, e) => s2 + num(e.amount), 0);
+        return h("div", { class: "load-exp small" }, h("b", null, `Load expenses ${money(tot)}`), " · ", linked.map((e) => `${e.cat} ${money(num(e.amount))}`).join(", "),
+          m.rate ? h("span", { class: "muted" }, ` · keeps ${money(m.net - tot)} after these`) : null);
+      })(),
       l.notes ? h("div", { class: "quote small" }, l.notes) : null,
       depRow,
       days !== null ? h("div", { class: "muted small" }, `${days} day${days === 1 ? "" : "s"} in this stage`) : null,
@@ -558,7 +566,7 @@ export function loadsView(ctx, root, ids) {
       }, "primary")));
   };
 
-  watchOps(ctx, ids, (s) => { st = s; draw(); if (pending) { const f = pending; pending = null; f(); } }, { expenses: false });
+  watchOps(ctx, ids, (s) => { st = s; draw(); if (pending) { const f = pending; pending = null; f(); } }, { expenses: canDeposit });
   root.append(
     stats,
     h("div", { class: "row-inline" }, btn("+ New load", () => openForm(null), "primary"), btn("Loads report", () => ready(() => report.replaceChildren(reportCard())), "ghost")),
@@ -598,8 +606,21 @@ export function expensesView(ctx, root, ids) {
     const truckSel = select("truckId", []);
     const fillTrucks = () => truckSel.replaceChildren(h("option", { value: "" }, "Whole company (split across trucks)"),
       ...st.trucks.filter((t) => t.carrierId === carrierSel.value).map((t) => h("option", { value: t.id, selected: x ? x.truckId === t.id : state.truck === t.id }, t.unit)));
-    carrierSel.addEventListener("change", () => { fillTrucks(); payLabels(); });
+    // Which load this expense belongs to (lumper, tolls, a repair on the road…)
+    const loadSel = select("loadId", []);
+    const fillLoads = () => {
+      const ls = st.loads.filter((l) => l.carrierId === carrierSel.value && l.status !== "cancelled")
+        .sort((a, b) => String(b.pickupDate || isoOf(b.createdAt)).localeCompare(String(a.pickupDate || isoOf(a.createdAt)))).slice(0, 60);
+      loadSel.replaceChildren(h("option", { value: "" }, "Not for a load"),
+        ...ls.map((l) => h("option", { value: l.id, selected: x && x.loadId === l.id }, `${shortId(l.id)} ${lane(l)}${l.pickupDate ? " · " + fmtDate(l.pickupDate) : ""}`)));
+    };
+    loadSel.addEventListener("change", () => {
+      const l = st.loads.find((y) => y.id === loadSel.value);
+      if (l && l.truckId && !truckSel.value) truckSel.value = l.truckId;
+    });
+    carrierSel.addEventListener("change", () => { fillTrucks(); fillLoads(); payLabels(); });
     fillTrucks();
+    fillLoads();
     const v = x || { cat: "Fuel", date: today() };
     const catIn = select("cat", CATS.map((c) => ({ value: c, label: c, selected: c === v.cat })));
     const amt = input("amount", { type: "number", min: "0", step: "0.01", inputmode: "decimal", placeholder: "0.00", required: true, value: v.amount ?? "" });
@@ -674,8 +695,10 @@ export function expensesView(ctx, root, ids) {
     const form = h("form", { class: "stack", autocomplete: "off", onSubmit: async (e) => {
       e.preventDefault();
       const fuel = ["Fuel", "DEF"].includes(catIn.value);
+      const l = st.loads.find((y) => y.id === loadSel.value);
       const data = { cat: catIn.value, amount: Math.round(num(amt.value) * 100) / 100, truckId: truckSel.value || null, date: date.value || today(), paidWith: paid.value,
-        gallons: fuel ? num(gal.value) : 0, state: fuel ? stIn.value.trim().toUpperCase().slice(0, 2) : "", note: note.value.trim() };
+        gallons: fuel ? num(gal.value) : 0, state: fuel ? stIn.value.trim().toUpperCase().slice(0, 2) : "", note: note.value.trim(),
+        loadId: l ? l.id : null, loadLabel: l ? `${shortId(l.id)} ${lane(l)}` : null };
       const ok = await guard(async () => {
         if (billFile) [data.docId] = await saveScans(ctx, [billFile], { carrierId: carrierSel.value, kind: "Receipt", category: "Receipts", status: "filed", name: `${data.cat} receipt · ${data.date}` });
         if (x) await updateDoc(doc(db, "expenses", x.id), data);
@@ -687,7 +710,7 @@ export function expensesView(ctx, root, ids) {
       h("div", { class: "scanner" }, h("label", { for: "bill-file", class: "btn btn-dark scanbtn" }, "Scan bill / receipt"), billIn, msg, plan),
       h("div", { class: "form-grid" },
         carriers.length > 1 ? field("Carrier", carrierSel) : null,
-        field("Category", catIn), field("Amount ($)", amt), field("Truck", truckSel), field("Date", date), field("Paid with", paid)),
+        field("Category", catIn), field("Amount ($)", amt), field("Truck", truckSel), field("Load", loadSel), field("Date", date), field("Paid with", paid)),
       fuelRow,
       field("Where / note", note),
       h("div", { class: "row-inline" }, btn(x ? "Save changes" : "Save expense", null, "primary", { type: "submit" }), btn("Cancel", closeForm, "ghost")));
@@ -723,7 +746,7 @@ export function expensesView(ctx, root, ids) {
       return h("article", { class: "item " + (e.cat === "Fuel" ? "st-fuel" : "st-exp") },
         h("div", { class: "item-top" },
           h("div", { class: "grow" }, h("div", { class: "item-lane" }, e.cat),
-            h("div", { class: "muted small" }, [fmtDate(e.date), ids.length > 1 ? ctx.carrierName(e.carrierId) : null, truckName(e), e.cat === "Fuel" && e.gallons ? `${num(e.gallons)} gal${e.state ? " in " + e.state : ""}` : null, isCard(e) ? `${factorName(carrierOf(ctx, e.carrierId))} card` : null, e.rec ? "recurring" : null].filter(Boolean).join(" · "))),
+            h("div", { class: "muted small" }, [fmtDate(e.date), ids.length > 1 ? ctx.carrierName(e.carrierId) : null, truckName(e), e.loadLabel ? "Load " + e.loadLabel : null, e.cat === "Fuel" && e.gallons ? `${num(e.gallons)} gal${e.state ? " in " + e.state : ""}` : null, isCard(e) ? `${factorName(carrierOf(ctx, e.carrierId))} card` : null, e.rec ? "recurring" : null].filter(Boolean).join(" · "))),
           h("b", { class: "mono" }, money(num(e.amount)))),
         e.note ? h("div", { class: "small" }, e.note) : null,
         h("div", { class: "acts" },

@@ -4,6 +4,7 @@ import { watch, byNewest } from "../data.js";
 import { loadsTable, docsReviewQueue, requestsList, showInvite, staffScanCard, openDoc } from "../components.js";
 import { pickerPage, summaryView, loadsView, expensesView, taxView, carrierSettingsCard } from "../ops.js";
 import { driveUrl, forgetDriveUrl, pingDrive, sendToDrive } from "../drive.js";
+import { people as carrierPeople, paystubs as carrierPaystubs } from "./carrier.js";
 
 const allIds = (ctx) => ctx.carriers.map((c) => c.id);
 
@@ -241,7 +242,7 @@ function accountsView(ctx, root) {
       (!q || [u.name, u.email, u.phone, u.company].filter(Boolean).join(" ").toLowerCase().includes(q)))
       .sort((a, b) => (a.name || a.email || "").localeCompare(b.name || b.email || ""));
     body.replaceChildren(table([
-      { label: "Name", cell: (u) => h("div", null, h("div", { class: "strong" }, u.name || "—"), h("div", { class: "muted small" }, u.email || "")) },
+      { label: "Name", cell: (u) => h("div", null, h("div", { class: "strong" }, u.name || "—"), h("div", { class: "muted small" }, u.email || (u.manual ? "No app login (added by hand)" : ""))) },
       { label: "Role", cell: (u) => pill(u.role === "pending" ? "pending" : "x", ROLE_LABEL[u.role] || u.role) },
       { label: "Carrier", cell: (u) => (u.carrierId ? ctx.carrierName(u.carrierId) : u.role === "dispatcher" ? (u.allCarriers ? "All carriers" : `${(u.assignedCarriers || []).length} assigned`) : u.company || "—") },
       { label: "Phone", cell: (u) => (u.phone ? h("a", { href: "tel:" + u.phone }, u.phone) : "—") },
@@ -318,6 +319,8 @@ export default [
   { id: "tax", label: "1099", render: (ctx, root) => pickerPage(ctx, root, "tax", taxView, { requireOne: true }) },
   { id: "documents", label: "Documents", render: docsView },
   { id: "requests", label: "Truck requests", render: (ctx, root) => root.append(requestsList(ctx, allIds(ctx), { staff: true })) },
+  { id: "people", label: "Drivers & trucks", render: (ctx, root) => pickerPage(ctx, root, "people", (sub, body) => carrierPeople(sub, body), { requireOne: true }) },
+  { id: "paystubs", label: "Paystubs", render: (ctx, root) => pickerPage(ctx, root, "paystubs", (sub, body) => carrierPaystubs(sub, body), { requireOne: true }) },
   { id: "carriers", label: "Carriers", render: carriersView },
   { id: "accounts", label: "Accounts", render: accountsView },
   { id: "team", label: "Team", render: teamView },

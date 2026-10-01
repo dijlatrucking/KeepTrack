@@ -47,3 +47,12 @@ export async function sendToDrive(docId, { quiet = false } = {}) {
     if (!quiet) { clearTimeout(timer); timer = setTimeout(report, 1200); } else { sent = failed = 0; }
   }
 }
+
+// A rejected duplicate (or bad photo) is moved to the Drive trash too, so the folders stay clean.
+// The script only does this for documents that really are marked rejected.
+export async function removeFromDrive(docId) {
+  const url = await driveUrl();
+  if (!url || !auth.currentUser) return null;
+  try { return await post(url, { idToken: await auth.currentUser.getIdToken(), docId, remove: true }); }
+  catch (e) { console.warn("Drive remove failed", e); return null; }
+}

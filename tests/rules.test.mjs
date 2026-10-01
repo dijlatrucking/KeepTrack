@@ -42,6 +42,7 @@ await env.withSecurityRulesDisabled(async (c) => {
   await put("documents/D2", { carrierId: "A", uploadedBy: "drvA1", status: "approved", name: "BOL ok" });
   await put("documents/D3", { carrierId: "B", uploadedBy: "drvB1", status: "pending", name: "BOL B" });
   await put("documents/D4", { carrierId: "A", uploadedBy: "adminA", status: "filed", name: "Insurance" });
+  await put("documents/D5", { carrierId: "A", uploadedBy: "drvA2", status: "pending", name: "Lumper", kind: "Lumper", amount: 85 });
   for (const d of ["D1", "D2", "D3", "D4"]) {
     const src = { D1: ["A", "drvA1"], D2: ["A", "drvA1"], D3: ["B", "drvB1"], D4: ["A", "adminA"] }[d];
     await put(`docFiles/${d}`, { carrierId: src[0], uploadedBy: src[1], data: "data:image/jpeg;base64,AAAA" });
@@ -224,10 +225,24 @@ await deny("carrier admin deletes carrier B's truck", () => deleteDoc(doc(a, "tr
 await deny("carrier admin moves own truck to carrier B", () => updateDoc(doc(a, "trucks/tA1"), { carrierId: "B" }));
 await allow("carrier admin sees approved docs (app query)", () => getDocs(q(a, "documents", eq("carrierId", "A"), eq("status", "approved"))));
 await allow("carrier admin sees filed docs (app query)", () => getDocs(q(a, "documents", eq("carrierId", "A"), eq("status", "filed"))));
-await deny("carrier admin peeks at pending (unreviewed) docs", () => getDocs(q(a, "documents", eq("carrierId", "A"), eq("status", "pending"))));
-await deny("carrier admin opens a pending scan", () => getDoc(doc(a, "docFiles/D1")));
+await allow("carrier admin sees driver uploads waiting for review", () => getDocs(q(a, "documents", eq("carrierId", "A"), eq("status", "pending"))));
+await allow("carrier admin opens a driver's pending scan", () => getDoc(doc(a, "docFiles/D1")));
 await allow("carrier admin opens an approved scan", () => getDoc(doc(a, "docFiles/D2")));
-await deny("carrier admin approves a driver's doc", () => updateDoc(doc(a, "documents/D1"), { status: "approved" }));
+await allow("carrier admin looks for duplicates by fingerprint (app query)", () => getDocs(q(a, "documents", eq("carrierId", "A"), eq("hash", "abc"))));
+await deny("carrier admin changes who uploaded a pending doc", () => updateDoc(doc(a, "documents/D5"), { uploadedBy: "adminA" }));
+await deny("carrier admin re-labels a pending doc while approving", () => updateDoc(doc(a, "documents/D5"), { status: "approved", kind: "BOL" }));
+await allow("carrier admin rejects a driver's duplicate", () => updateDoc(doc(a, "documents/D5"), { status: "rejected", rejectReason: "duplicate", reviewedBy: "adminA" }));
+await deny("carrier admin flips a rejected doc back", () => updateDoc(doc(a, "documents/D5"), { status: "approved" }));
+await allow("carrier admin approves a driver's doc", () => updateDoc(doc(a, "documents/D1"), { status: "approved", reviewedBy: "adminA" }));
+await deny("carrier admin un-approves an approved driver doc", () => updateDoc(doc(a, "documents/D2"), { status: "rejected" }));
+await deny("carrier admin approves carrier B's doc", () => updateDoc(doc(a, "documents/D3"), { status: "approved" }));
+await deny("carrier admin reads carrier B's pending docs", () => getDocs(q(a, "documents", eq("carrierId", "B"), eq("status", "pending"))));
+await allow("carrier admin adds a driver by hand (no login)", () => setDoc(doc(a, "users/manual_abc12345xyz"), { role: "driver", manual: true, carrierId: "A", name: "Owner-op Sam", payType: "perMile", payRate: 0.65 }));
+await deny("carrier admin creates a hand-added profile with a real-looking id", () => setDoc(doc(a, "users/Zx81kQ2mN0pL4sT7vW9yB3cD5eF6"), { role: "driver", manual: true, carrierId: "A", name: "X" }));
+await deny("carrier admin hand-adds a carrier admin", () => setDoc(doc(a, "users/manual_abc12345zzz"), { role: "carrierAdmin", manual: true, carrierId: "A", name: "X" }));
+await deny("carrier admin hand-adds a driver to carrier B", () => setDoc(doc(a, "users/manual_abc12345yyy"), { role: "driver", manual: true, carrierId: "B", name: "X" }));
+await deny("carrier admin sneaks extra powers onto a hand-added driver", () => setDoc(doc(a, "users/manual_abc12345www"), { role: "driver", manual: true, carrierId: "A", name: "X", allCarriers: true }));
+await deny("driver hand-adds another driver", () => setDoc(doc(d, "users/manual_abc12345vvv"), { role: "driver", manual: true, carrierId: "A", name: "X" }));
 await deny("carrier admin opens carrier B's scan", () => getDoc(doc(a, "docFiles/D3")));
 await allow("carrier admin sends a lane request", () => addDoc(collection(a, "requests"), { carrierId: "A", createdBy: "adminA", status: "open", text: "x" }));
 await deny("carrier admin sends a request as carrier B", () => addDoc(collection(a, "requests"), { carrierId: "B", createdBy: "adminA", status: "open", text: "x" }));
@@ -299,6 +314,7 @@ await allow("owner marks a fee paid", () => updateDoc(doc(o, "loadMoney/L1"), { 
 await allow("owner lists every carrier's expenses", () => getDocs(collection(o, "expenses")));
 await allow("owner lists every recurring charge", () => getDocs(collection(o, "recurring")));
 await allow("owner edits any carrier's settings", () => updateDoc(doc(o, "carriers/B"), { factorName: "RTS", factorPct: 2.5, feePercent: 7 }));
+await allow("owner adds a driver by hand for any carrier", () => setDoc(doc(o, "users/manual_owner12345"), { role: "driver", manual: true, carrierId: "B", name: "Hand-added" }));
 await allow("owner connects Google Drive", () => setDoc(doc(o, "settings/app"), { driveUrl: "https://script.google.com/macros/s/x/exec" }));
 await allow("driver reads app settings (to know where Drive is)", () => getDoc(doc(d, "settings/app")));
 await deny("carrier admin changes the Drive connection", () => setDoc(doc(a, "settings/app"), { driveUrl: "https://evil.example/exec" }));

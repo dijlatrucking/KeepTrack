@@ -130,7 +130,8 @@ h2 { font-size: 19px; font-weight: 700; }
 .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px; align-items: end; }
 .form-actions { display: flex; align-items: flex-end; }
 .inline-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; }
-.inline-form .input { flex: 1 1 200px; }
+.inline-form > .input { flex: 1 1 200px; }
+.inline-form > .field { flex: 1 1 160px; }
 .field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .field-label { font-size: 14px; font-weight: 500; }
 .field-hint { font-size: 12px; color: var(--muted); }
@@ -254,3 +255,14 @@ details.stub summary { display: flex; justify-content: space-between; gap: 12px;
   .bar { grid-template-columns: 90px 1fr auto; }
 }
 .steps-list { margin: 0; padding-left: 20px; line-height: 1.7; }
+
+/* Driver edit panel */
+.edit-panel { display: flex; flex-direction: column; gap: 12px; padding: 14px; background: var(--ground); border-radius: 12px; }
+.tag { margin-left: 8px; vertical-align: middle; font-size: 11px; }
+
+/* Review queue */
+.review-main { display: flex; gap: 12px; align-items: flex-start; min-width: 0; flex: 1; }
+.dupe-slot:empty { display: none; }
+.dupe-slot { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px 10px; background: var(--accent-soft); border-radius: 10px; }
+.btn-warn { background: var(--accent-soft); color: var(--accent-dark); border-color: var(--accent); }
+.load-exp { padding: 6px 10px; background: var(--ground); border-radius: 8px; }

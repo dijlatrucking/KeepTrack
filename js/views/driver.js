@@ -15,8 +15,9 @@ function uploader(ctx, load) {
     const ok = await guard(() => uploadDoc(ctx, file.files[0], {
       carrierId: ctx.profile.carrierId, loadId: load.id, loadLabel: `${shortId(load.id)} ${lane(load)}`,
       kind: kindSel.value, status: "pending", name: `${kindSel.value} · ${shortId(load.id)}`,
-    }), "Sent to dispatch");
-    status.textContent = ok ? "Uploaded ✓" : "";
+    }));
+    if (ok && !ok.duplicate) toast("Sent to dispatch", "ok");
+    status.textContent = ok ? (ok.duplicate ? "Already sent" : "Uploaded ✓") : "";
     file.value = "";
   });
   return h("div", { class: "upload-row" },

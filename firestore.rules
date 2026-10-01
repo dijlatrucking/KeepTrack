@@ -41,14 +41,19 @@ service cloud.firestore {
     match /users/{uid} {
       allow read: if signedIn() && (request.auth.uid == uid || isOwner()
         || manages(resource.data.get('carrierId', '')));
-      allow create: if signedIn() && request.auth.uid == uid && (
+      allow create: if (signedIn() && request.auth.uid == uid && (
            // Invite code: role and carrier come from the invite.
            (request.resource.data.keys().hasOnly(['name', 'email', 'phone', 'role', 'carrierId', 'invite', 'createdAt'])
             && redeemsInvite(request.resource.data))
            // No code: request access and wait as "pending" until the owner approves.
         || (request.resource.data.role == 'pending'
             && request.resource.data.requestedRole in ['carrierAdmin', 'dispatcher']
-            && request.resource.data.keys().hasOnly(['name', 'email', 'phone', 'role', 'requestedRole', 'company', 'mc', 'dot', 'note', 'createdAt'])));
+            && request.resource.data.keys().hasOnly(['name', 'email', 'phone', 'role', 'requestedRole', 'company', 'mc', 'dot', 'note', 'createdAt']))))
+        // A driver added by hand (no app login). The id can never match a real sign-in.
+        || (uid.matches('^manual_[a-z0-9]{8,40}$')
+            && request.resource.data.role == 'driver' && request.resource.data.manual == true
+            && (isOwner() || isCarrierAdmin(request.resource.data.carrierId))
+            && request.resource.data.keys().hasOnly(['role', 'manual', 'carrierId', 'name', 'phone', 'payType', 'payRate', 'truckId', 'truckUnit', 'createdAt']));
       allow update: if isOwner()
         || (request.auth.uid == uid && onlyChanges(['name', 'phone']))
         || (resource.data.role == 'driver' && isCarrierAdmin(resource.data.get('carrierId', ''))
@@ -131,8 +136,9 @@ service cloud.firestore {
 
     // Paperwork flows up: driver uploads (pending) → dispatch approves → carrier + owner see it.
     match /documents/{id} {
+      // Driver uploads reach dispatch and the carrier at the same time; either can approve or reject.
       allow read: if staff(resource.data.carrierId)
-        || (isCarrierAdmin(resource.data.carrierId) && resource.data.status in ['approved', 'filed'])
+        || isCarrierAdmin(resource.data.carrierId)
         || (hasProfile() && resource.data.uploadedBy == request.auth.uid
             && me().get('carrierId', '') == resource.data.carrierId);
       allow create: if request.resource.data.uploadedBy == request.auth.uid && (
@@ -141,7 +147,10 @@ service cloud.firestore {
         || staff(request.resource.data.carrierId));
       allow update: if (staff(resource.data.carrierId) && keepsCarrier())
         || (isCarrierAdmin(resource.data.carrierId) && resource.data.status == 'filed'
-            && onlyChanges(['name', 'category', 'tags', 'expiresAt']));
+            && onlyChanges(['name', 'category', 'tags', 'expiresAt']))
+        || (isCarrierAdmin(resource.data.carrierId) && resource.data.status == 'pending'
+            && request.resource.data.status in ['approved', 'rejected']
+            && onlyChanges(['status', 'rejectReason', 'reviewedBy', 'reviewedAt', 'expenseId', 'amount']));
       allow delete: if isOwner()
         || (isCarrierAdmin(resource.data.carrierId) && resource.data.status == 'filed');
     }
@@ -152,7 +161,7 @@ service cloud.firestore {
       function docMeta() { return get(/databases/$(database)/documents/documents/$(id)).data; }
       allow get: if hasProfile() && (
            staff(docMeta().carrierId)
-        || (isCarrierAdmin(docMeta().carrierId) && docMeta().status in ['approved', 'filed'])
+        || isCarrierAdmin(docMeta().carrierId)
         || (docMeta().uploadedBy == request.auth.uid && me().get('carrierId', '') == docMeta().carrierId));
       allow create: if hasProfile()
         && request.resource.data.uploadedBy == request.auth.uid
