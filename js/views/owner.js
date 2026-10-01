@@ -147,20 +147,22 @@ function invitesCard(ctx) {
 function teamView(ctx, root) {
   const inviteSlot = h("div");
   const body = h("div");
+  // Ticked boxes are kept here so a live update (e.g. a dispatcher just approved) can't untick them before Save.
+  const drafts = new Map();
   ctx.sub(watch(query(collection(db, "users"), where("role", "==", "dispatcher")), (users) => {
     body.replaceChildren(users.length ? h("div", { class: "list" }, users.map((u) => {
-      const assigned = new Set(u.assignedCarriers || []);
-      const allBox = h("input", { type: "checkbox", checked: !!u.allCarriers });
-      const boxes = ctx.carriers.map((c) => ({ c, el: h("input", { type: "checkbox", checked: assigned.has(c.id) }) }));
+      const d = drafts.get(u.id) || { all: !!u.allCarriers, set: new Set(u.assignedCarriers || []) };
+      const keep = () => drafts.set(u.id, d);
+      const allBox = h("input", { type: "checkbox", checked: d.all, onChange: (e) => { d.all = e.target.checked; keep(); } });
+      const boxes = ctx.carriers.map((c) => h("label", { class: "check" },
+        h("input", { type: "checkbox", checked: d.set.has(c.id), onChange: (e) => { e.target.checked ? d.set.add(c.id) : d.set.delete(c.id); keep(); } }), c.name));
       return h("div", { class: "row col" },
         h("div", { class: "row-top" }, h("div", null, h("div", { class: "strong" }, u.name || u.email), h("div", { class: "muted small" }, u.email))),
-        h("div", { class: "checks" },
-          h("label", { class: "check" }, allBox, h("strong", null, "All carriers")),
-          boxes.map(({ c, el }) => h("label", { class: "check" }, el, c.name))),
-        h("div", null, btn("Save access", () => guard(() => updateDoc(doc(db, "users", u.id), {
-          allCarriers: allBox.checked,
-          assignedCarriers: boxes.filter((b) => b.el.checked).map((b) => b.c.id),
-        }), "Access saved"), "dark")));
+        h("div", { class: "checks" }, h("label", { class: "check" }, allBox, h("strong", null, "All carriers")), boxes),
+        h("div", null, btn("Save access", async () => {
+          const ok = await guard(() => updateDoc(doc(db, "users", u.id), { allCarriers: d.all, assignedCarriers: [...d.set] }), "Access saved");
+          if (ok !== null) drafts.delete(u.id);
+        }, "dark")));
     })) : h("p", { class: "empty" }, "No dispatchers yet."));
   }));
   root.append(card("Dispatchers",
