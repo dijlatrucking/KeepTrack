@@ -124,7 +124,13 @@ const heading = (p, name) => p.getByRole("heading", { name, exact: true }).first
 const nav = async (p, label) => {
   const menu = p.locator(".menu-btn");
   if (await menu.isVisible()) { if ((await menu.getAttribute("aria-expanded")) !== "true") await menu.click(); }
-  await p.locator("nav.site-nav a", { hasText: label }).first().click();
+  const link = p.locator("nav.site-nav a", { hasText: label }).first();
+  const href = await link.getAttribute("href");
+  // The page redraws on the hashchange that follows the click; wait for it so nothing is typed into the old page.
+  const changes = await p.evaluate((h) => location.hash !== h, href);
+  if (changes) await p.evaluate(() => document.querySelector("#content .view")?.setAttribute("data-old", "1"));
+  await link.click();
+  if (changes) await p.waitForFunction(() => !document.querySelector("#content .view[data-old]"));
 };
 const overflow = async (p) => p.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
 const home = async (p) => { await p.evaluate(() => history.replaceState(null, "", location.pathname)); await p.reload(); };
