@@ -1,7 +1,8 @@
 import { db, collection, doc, addDoc, setDoc, updateDoc, deleteDoc, query, where, serverTimestamp, writeBatch } from "../fb.js";
-import { h, card, table, stat, money, num, field, input, select, btn, formToObj, guard, inviteCode, pill, ago } from "../ui.js";
+import { h, card, table, stat, money, num, field, input, select, btn, formToObj, guard, inviteCode, pill, ago, toast } from "../ui.js";
 import { watch, byNewest } from "../data.js";
-import { loadsTable, loadForm, docsReviewQueue, requestsList, showInvite, staffScanCard, openDoc } from "../components.js";
+import { loadsTable, docsReviewQueue, requestsList, showInvite, staffScanCard, openDoc } from "../components.js";
+import { pickerPage, summaryView, loadsView, expensesView, taxView, carrierSettingsCard } from "../ops.js";
 
 const allIds = (ctx) => ctx.carriers.map((c) => c.id);
 
@@ -93,12 +94,10 @@ function overview(ctx, root) {
     loadsTable(ctx, allIds(ctx), { showMoney: true, editable: true, showDispatcher: true }));
 }
 
-function loadsView(ctx, root) {
-  root.append(loadForm(ctx), loadsTable(ctx, allIds(ctx), { showMoney: true, editable: true, showDispatcher: true }));
-}
 
 function carriersView(ctx, root) {
   const inviteSlot = h("div");
+  const editSlot = h("div");
   const form = h("form", { class: "form-grid", onSubmit: async (e) => {
     e.preventDefault();
     const f = formToObj(form);
@@ -118,14 +117,16 @@ function carriersView(ctx, root) {
   const list = table([
     { label: "Carrier", cell: (c) => h("span", { class: "strong" }, c.name) },
     { label: "MC / DOT", cell: (c) => [c.mc, c.dot].filter(Boolean).join(" / ") || "—" },
-    { label: "Fee %", cell: (c) => (c.feePercent ? c.feePercent + "%" : "—"), align: "right" },
+    { label: "Dispatch fee", cell: (c) => (c.feePercent ? c.feePercent + "%" : "—"), align: "right" },
+    { label: "Factoring", cell: (c) => (c.factorPct ? `${c.factorName || "Factoring"} ${c.factorPct}%` : "—") },
+    { label: "", cell: (c) => btn("Edit", () => { editSlot.replaceChildren(carrierSettingsCard(ctx, c, { full: true })); editSlot.scrollIntoView({ block: "start", behavior: "smooth" }); }, "ghost") },
     { label: "", cell: (c) => btn("Invite carrier admin", async () => {
       const code = await guard(() => createInvite(ctx, { role: "carrierAdmin", carrierId: c.id, carrierName: c.name }));
       if (code) inviteSlot.replaceChildren(showInvite(code, `${c.name} (carrier admin)`));
     }) },
   ], ctx.carriers, "No carriers yet. Add your own company first, then client carriers.");
 
-  root.append(card("Add a carrier", null, form), card("Carriers", null, inviteSlot, list), invitesCard(ctx));
+  root.append(card("Add a carrier", null, form), editSlot, card("Carriers", null, inviteSlot, list), invitesCard(ctx));
 }
 
 function invitesCard(ctx) {
@@ -190,12 +191,76 @@ function docsView(ctx, root) {
   root.append(staffScanCard(ctx), docsReviewQueue(ctx, allIds(ctx)), card("All documents", null, search, all));
 }
 
+
+const ROLE_LABEL = { owner: "Owner", dispatcher: "Dispatcher", carrierAdmin: "Carrier admin", driver: "Driver", pending: "Pending" };
+
+// Every account on KeepTrack: search, filter by role or carrier, change role/carrier, remove access.
+function accountsView(ctx, root) {
+  let users = [], q = "", roleF = "all", carrierF = "all";
+  const stats = h("div", { class: "stats" });
+  const editSlot = h("div");
+  const body = h("div");
+  const search = input("q", { type: "search", placeholder: "Search name, email, phone…", "aria-label": "Search accounts" });
+  const roleSel = select("role", [{ value: "all", label: "All roles" }, ...Object.entries(ROLE_LABEL).map(([value, label]) => ({ value, label }))], { "aria-label": "Role" });
+  const carrierSel = select("carrier", [{ value: "all", label: "All carriers" }, { value: "none", label: "No carrier" }, ...ctx.carriers.map((c) => ({ value: c.id, label: c.name }))], { "aria-label": "Carrier" });
+  search.addEventListener("input", () => { q = search.value.trim().toLowerCase(); draw(); });
+  roleSel.addEventListener("change", () => { roleF = roleSel.value; draw(); });
+  carrierSel.addEventListener("change", () => { carrierF = carrierSel.value; draw(); });
+
+  const edit = (u) => {
+    const r = select("role", Object.entries(ROLE_LABEL).filter(([k]) => k !== "pending").map(([value, label]) => ({ value, label, selected: value === u.role })));
+    const c = select("carrierId", [{ value: "", label: "No carrier" }, ...ctx.carriers.map((x) => ({ value: x.id, label: x.name, selected: x.id === u.carrierId }))]);
+    const sync = () => { c.closest("label").hidden = !["carrierAdmin", "driver"].includes(r.value); };
+    r.addEventListener("change", sync);
+    const form = h("form", { class: "stack", onSubmit: async (e) => {
+      e.preventDefault();
+      if (u.id === ctx.uid && r.value !== "owner") return toast("You can't remove your own owner access.", "bad");
+      if (["carrierAdmin", "driver"].includes(r.value) && !c.value) return toast("Pick their carrier.", "bad");
+      const data = { role: r.value, carrierId: ["carrierAdmin", "driver"].includes(r.value) ? c.value : null };
+      if (r.value === "dispatcher" && u.role !== "dispatcher") Object.assign(data, { assignedCarriers: [], allCarriers: false });
+      const ok = await guard(() => updateDoc(doc(db, "users", u.id), data), "Account updated");
+      if (ok !== null) editSlot.replaceChildren();
+    } },
+      h("div", { class: "form-grid" }, field("Role", r), field("Carrier", c)),
+      h("p", { class: "muted small" }, "Dispatchers get their carriers under Team."),
+      h("div", { class: "row-inline" }, btn("Save", null, "primary", { type: "submit" }), btn("Cancel", () => editSlot.replaceChildren(), "ghost")));
+    editSlot.replaceChildren(card(`Edit ${u.name || u.email}`, null, form));
+    sync();
+    editSlot.scrollIntoView({ block: "start", behavior: "smooth" });
+  };
+
+  const draw = () => {
+    const counts = {};
+    users.forEach((u) => (counts[u.role] = (counts[u.role] || 0) + 1));
+    stats.replaceChildren(stat("Accounts", String(users.length)), stat("Carrier admins", String(counts.carrierAdmin || 0)), stat("Drivers", String(counts.driver || 0)), stat("Dispatchers", String(counts.dispatcher || 0)), stat("Pending", String(counts.pending || 0)));
+    const shown = users.filter((u) => (roleF === "all" || u.role === roleF) && (carrierF === "all" || (carrierF === "none" ? !u.carrierId : u.carrierId === carrierF)) &&
+      (!q || [u.name, u.email, u.phone, u.company].filter(Boolean).join(" ").toLowerCase().includes(q)))
+      .sort((a, b) => (a.name || a.email || "").localeCompare(b.name || b.email || ""));
+    body.replaceChildren(table([
+      { label: "Name", cell: (u) => h("div", null, h("div", { class: "strong" }, u.name || "—"), h("div", { class: "muted small" }, u.email || "")) },
+      { label: "Role", cell: (u) => pill(u.role === "pending" ? "pending" : "x", ROLE_LABEL[u.role] || u.role) },
+      { label: "Carrier", cell: (u) => (u.carrierId ? ctx.carrierName(u.carrierId) : u.role === "dispatcher" ? (u.allCarriers ? "All carriers" : `${(u.assignedCarriers || []).length} assigned`) : u.company || "—") },
+      { label: "Phone", cell: (u) => (u.phone ? h("a", { href: "tel:" + u.phone }, u.phone) : "—") },
+      { label: "Joined", cell: (u) => ago(u.createdAt) },
+      { label: "", cell: (u) => u.role === "pending" ? h("span", { class: "muted small" }, "See Access requests") : h("div", { class: "row-meta" },
+        btn("Edit", () => edit(u), "ghost"),
+        u.id !== ctx.uid ? btn("Remove", () => confirm(`Remove ${u.name || u.email}? They lose access right away.`) && guard(() => deleteDoc(doc(db, "users", u.id)), "Access removed"), "ghost") : null) },
+    ], shown, "No accounts match."));
+  };
+  ctx.sub(watch(collection(db, "users"), (r) => { users = r; draw(); }));
+  root.append(stats, editSlot, card("Accounts", null, h("div", { class: "form-grid" }, field("Search", search), field("Role", roleSel), field("Carrier", carrierSel)), body));
+}
+
 export default [
   { id: "overview", label: "Overview", render: overview },
-  { id: "access", label: "Access requests", render: (ctx, root) => root.append(accessRequests(ctx)) },
-  { id: "loads", label: "Loads", render: loadsView },
-  { id: "carriers", label: "Carriers", render: carriersView },
-  { id: "team", label: "Team", render: teamView },
+  { id: "summary", label: "Summary", render: (ctx, root) => pickerPage(ctx, root, "summary", summaryView) },
+  { id: "loads", label: "Loads", render: (ctx, root) => pickerPage(ctx, root, "loads", loadsView) },
+  { id: "expenses", label: "Expenses", render: (ctx, root) => pickerPage(ctx, root, "expenses", expensesView) },
+  { id: "tax", label: "1099", render: (ctx, root) => pickerPage(ctx, root, "tax", taxView, { requireOne: true }) },
   { id: "documents", label: "Documents", render: docsView },
   { id: "requests", label: "Truck requests", render: (ctx, root) => root.append(requestsList(ctx, allIds(ctx), { staff: true })) },
+  { id: "carriers", label: "Carriers", render: carriersView },
+  { id: "accounts", label: "Accounts", render: accountsView },
+  { id: "team", label: "Team", render: teamView },
+  { id: "access", label: "Access requests", render: (ctx, root) => root.append(accessRequests(ctx)) },
 ];

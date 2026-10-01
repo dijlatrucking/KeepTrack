@@ -1,7 +1,8 @@
 import { db, collection, query, where } from "../fb.js";
 import { h, stat } from "../ui.js";
 import { watchMany, scoped } from "../data.js";
-import { loadsTable, loadForm, docsReviewQueue, requestsList, staffScanCard } from "../components.js";
+import { loadsTable, docsReviewQueue, requestsList, staffScanCard } from "../components.js";
+import { pickerPage, loadsView } from "../ops.js";
 
 const ids = (ctx) => ctx.carriers.map((c) => c.id);
 
@@ -31,7 +32,7 @@ function tasks(ctx, root) {
 
 export default [
   { id: "tasks", label: "Tasks", render: tasks },
-  { id: "loads", label: "Loads", render: (ctx, root) => root.append(loadForm(ctx), loadsTable(ctx, ids(ctx), { showMoney: true, editable: true })) },
+  { id: "loads", label: "Loads", render: (ctx, root) => pickerPage(ctx, root, "d-loads", loadsView) },
   { id: "requests", label: "Truck requests", render: (ctx, root) => root.append(requestsList(ctx, ids(ctx), { staff: true })) },
   { id: "documents", label: "Documents", render: (ctx, root) => root.append(staffScanCard(ctx), docsReviewQueue(ctx, ids(ctx))) },
 ];

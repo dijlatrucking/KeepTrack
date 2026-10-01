@@ -10,6 +10,7 @@ const LOAD_STATUSES = [
   { value: "booked", label: "Booked" },
   { value: "in_transit", label: "In transit" },
   { value: "delivered", label: "Delivered" },
+  { value: "paid", label: "Paid" },
   { value: "cancelled", label: "Cancelled" },
 ];
 
@@ -141,15 +142,17 @@ export function scanPicker(label = "Scan or upload") {
       h("label", { for: id + "-cam", class: "btn btn-dark" }, "Scan with camera"),
       h("label", { for: id + "-file", class: "btn btn-ghost" }, "Choose file")),
     camera, chooser, list);
-  return { el, files: () => picked.slice(), clear: () => { picked = []; draw(); } };
+  return { el, files: () => picked.slice(), clear: () => { picked = []; draw(); }, add: (f) => { picked.push(f); draw(); } };
 }
 
 // Save each picked page as its own document. Multi-page scans get "p1/2" style names.
 export async function saveScans(ctx, files, meta) {
+  const ids = [];
   for (let i = 0; i < files.length; i++) {
     const name = (meta.name || `${meta.kind || "Doc"}${meta.loadLabel ? " · " + meta.loadLabel.split(" ")[0] : ""}`) + (files.length > 1 ? ` p${i + 1}/${files.length}` : "");
-    await uploadDoc(ctx, files[i], { ...meta, name });
+    ids.push((await uploadDoc(ctx, files[i], { ...meta, name })).id);
   }
+  return ids;
 }
 
 // Pop-up scanner for one load (from the load board's "Scan" button).
@@ -293,7 +296,7 @@ export function loadsTable(ctx, carrierIds, opts = {}) {
   searchIn.addEventListener("input", () => { search = searchIn.value.trim().toLowerCase(); limit = 100; draw(); });
   const chips = h("div", { class: "chips", role: "group", "aria-label": "Filter loads" });
   const draw = () => {
-    chips.replaceChildren(...[["all", "All"], ["booked", "Booked"], ["in_transit", "In transit"], ["delivered", "Delivered"]].map(([v, l]) =>
+    chips.replaceChildren(...[["all", "All"], ["booked", "Booked"], ["in_transit", "In transit"], ["delivered", "Delivered"], ["paid", "Paid"]].map(([v, l]) =>
       h("button", { type: "button", class: "chip" + (filter === v ? " on" : ""), "aria-pressed": String(filter === v), onClick: () => { filter = v; limit = 100; draw(); } }, l)));
     const matches = loads.filter((l) => (filter === "all" || l.status === filter) &&
       (!search || [shortId(l.id), lane(l), l.driverName, l.truckUnit, ctx.carrierName(l.carrierId), l.dispatcherName].filter(Boolean).join(" ").toLowerCase().includes(search)))
@@ -334,92 +337,6 @@ export function loadsTable(ctx, carrierIds, opts = {}) {
   ctx.sub(() => clearTimeout(pending));
   draw();
   return card(opts.title || "Load board", chips, searchIn, body);
-}
-
-// Dispatcher/owner: book a new load for any carrier they work.
-export function loadForm(ctx) {
-  const carriers = ctx.carriers;
-  const wrap = h("div");
-  if (!carriers.length) {
-    wrap.append(card("Book a load", null, h("p", { class: "empty" }, "No carriers assigned to you yet.")));
-    return wrap;
-  }
-  const driverSel = select("driver", [{ value: "", label: "Unassigned" }]);
-  const truckSel = select("truck", [{ value: "", label: "Unassigned" }]);
-  const carrierSel = select("carrierId", carriers.map((c) => ({ value: c.id, label: c.name })));
-  const rateIn = input("rate", { type: "number", step: "0.01", min: "0", inputmode: "decimal", required: true });
-  const feeIn = input("fee", { type: "number", step: "0.01", min: "0", inputmode: "decimal" });
-  let drivers = [], trucks = [];
-  const scans = scanPicker("Rate con / paperwork (optional)");
-
-  const loadPeople = async () => {
-    const cid = carrierSel.value;
-    const [ds, ts] = await Promise.all([
-      getDocs(query(collection(db, "users"), where("carrierId", "==", cid), where("role", "==", "driver"))),
-      getDocs(query(collection(db, "trucks"), where("carrierId", "==", cid))),
-    ]).catch(() => [null, null]);
-    drivers = ds ? ds.docs.map((d) => ({ id: d.id, ...d.data() })) : [];
-    trucks = ts ? ts.docs.map((d) => ({ id: d.id, ...d.data() })) : [];
-    driverSel.replaceChildren(h("option", { value: "" }, "Unassigned"), ...drivers.map((d) => h("option", { value: d.id }, d.name || d.email)));
-    truckSel.replaceChildren(h("option", { value: "" }, "Unassigned"), ...trucks.map((t) => h("option", { value: t.id }, t.unit)));
-  };
-  const autoFee = () => {
-    const c = carriers.find((x) => x.id === carrierSel.value);
-    if (c && c.feePercent && rateIn.value && !feeIn.dataset.touched) feeIn.value = ((num(rateIn.value) * num(c.feePercent)) / 100).toFixed(2);
-  };
-  carrierSel.addEventListener("change", () => { loadPeople(); autoFee(); });
-  rateIn.addEventListener("input", autoFee);
-  feeIn.addEventListener("input", () => (feeIn.dataset.touched = "1"));
-  driverSel.addEventListener("change", () => {
-    const d = drivers.find((x) => x.id === driverSel.value);
-    if (d && d.truckId) truckSel.value = d.truckId;
-  });
-  loadPeople();
-
-  const form = h("form", { class: "form-grid", onSubmit: async (e) => {
-    e.preventDefault();
-    const f = formToObj(form);
-    const driver = drivers.find((d) => d.id === f.driver);
-    const truck = trucks.find((t) => t.id === f.truck);
-    const ok = await guard(async () => {
-      const loadRef = await addDoc(collection(db, "loads"), {
-        carrierId: f.carrierId,
-        origin: f.origin.trim(), destination: f.destination.trim(),
-        pickupDate: f.pickupDate || null, deliverBy: f.deliverBy || null,
-        miles: num(f.miles), notes: f.notes.trim(),
-        driverId: driver ? driver.id : null, driverName: driver ? driver.name || driver.email : null,
-        truckId: truck ? truck.id : null, truckUnit: truck ? truck.unit : null,
-        dispatcherId: ctx.uid, dispatcherName: ctx.profile.name || "",
-        status: "booked", createdAt: serverTimestamp(),
-      });
-      await setDoc(doc(db, "loadMoney", loadRef.id), { carrierId: f.carrierId, rate: num(f.rate), fee: num(f.fee), feePaid: false });
-      const label = `${shortId(loadRef.id)} ${f.origin.trim()} → ${f.destination.trim()}`;
-      await saveScans(ctx, scans.files(), { carrierId: f.carrierId, loadId: loadRef.id, loadLabel: label, kind: f.docKind, status: "approved" });
-      return true;
-    }, scans.files().length ? "Load booked with paperwork" : "Load booked");
-    if (ok) { form.reset(); scans.clear(); delete feeIn.dataset.touched; loadPeople(); }
-  } },
-    field("Carrier", carrierSel),
-    field("Driver", driverSel),
-    field("Truck", truckSel),
-    field("Origin", input("origin", { required: true, placeholder: "City, ST" })),
-    field("Destination", input("destination", { required: true, placeholder: "City, ST" })),
-    field("Pickup date", input("pickupDate", { type: "date" })),
-    field("Deliver by", input("deliverBy", { type: "date" })),
-    field("Loaded miles", input("miles", { type: "number", min: "0", inputmode: "numeric" })),
-    field("Load rate ($)", rateIn),
-    field("Dispatch fee ($)", feeIn, "Auto-fills from the carrier's fee %"),
-    field("Notes", input("notes", { placeholder: "Reefer temp, appointment #, etc." })),
-    h("div", { class: "scan-block" },
-      h("div", { class: "form-grid" }, field("Paperwork type", select("docKind", DOC_KINDS.slice(0, 5)))),
-      scans.el),
-    h("div", { class: "form-actions" }, btn("Book load", null, "primary", { type: "submit" })));
-
-  let open = false;
-  const toggle = btn("+ Book load", () => { open = !open; form.hidden = !open; toggle.textContent = open ? "Close" : "+ Book load"; }, "primary");
-  form.hidden = true;
-  wrap.append(card("Book a load", toggle, form));
-  return wrap;
 }
 
 // Invite-code panel (owner → carrier admins & dispatchers, carrier admin → drivers).

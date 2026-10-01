@@ -5,6 +5,7 @@ import { chromium } from "playwright";
 import { initializeTestEnvironment } from "@firebase/rules-unit-testing";
 import { doc, setDoc, writeBatch, collection } from "firebase/firestore";
 import { PNG } from "pngjs";
+import { PDFDocument, StandardFonts } from "pdf-lib";
 import { spawn } from "node:child_process";
 import { cpSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -105,6 +106,14 @@ function noisyPng(w, h) {
   }
   return PNG.sync.write(png);
 }
+// A real text PDF (what brokers email), for the rate con and receipt readers.
+async function textPdf(lines) {
+  const pdf = await PDFDocument.create();
+  const page = pdf.addPage([612, 792]);
+  const font = await pdf.embedFont(StandardFonts.Helvetica);
+  lines.forEach((l, i) => page.drawText(l, { x: 40, y: 750 - i * 18, size: 11, font }));
+  return Buffer.from(await pdf.save());
+}
 const tinyPdf = Buffer.from("%PDF-1.1\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj 2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj 3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 200]>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF");
 
 // ---------- 1. Owner signs in ----------
@@ -141,7 +150,7 @@ await run("Owner sees the request live on Overview and approves it with an 8% fe
 });
 
 await run("Carrier's waiting screen opens into the carrier dashboard by itself", async () => {
-  await heading(carrier, "Overview");
+  await heading(carrier, "Summary");
   await carrier.locator(".eyebrow", { hasText: "Test Carrier A" }).waitFor();
 });
 
@@ -243,25 +252,38 @@ await run("Carrier sets the driver's pay to $0.60/mile on Unit 7", async () => {
   await row.getByText("$0.6 per mile").waitFor();
 });
 
-// ---------- 5. Dispatcher books a load ----------
-await run("Dispatcher books a 500-mile, $2,000 load and the 8% fee fills in", async () => {
+// ---------- 5. Dispatcher books a load by scanning the rate con ----------
+await run("Dispatcher scans a rate con PDF and the load fills itself in", async () => {
   await nav(dispatcher, "Loads");
-  await dispatcher.getByRole("button", { name: "+ Book load" }).click();
-  await dispatcher.locator("select[name=driver] option", { hasText: "Drew Driver" }).waitFor({ state: "attached" });
-  await dispatcher.getByLabel("Driver").selectOption({ label: "Drew Driver" });
-  if ((await dispatcher.getByLabel("Truck").inputValue()) === "") throw new Error("Truck didn't auto-fill from the driver");
-  await dispatcher.getByLabel("Origin").fill("Boise, ID");
-  await dispatcher.getByLabel("Destination").fill("Denver, CO");
-  await dispatcher.getByLabel("Loaded miles").fill("500");
-  await dispatcher.getByLabel("Load rate ($)").fill("2000");
+  await dispatcher.getByRole("button", { name: "+ New load" }).click();
+  const rc = await textPdf([
+    "TQL Total Quality Logistics",
+    "RATE CONFIRMATION        Load # 4471823",
+    "Carrier: Test Carrier A LLC          Truck # 7",
+    "Pickup 1        " + new Date().toLocaleDateString("en-US", { month: "2-digit", day: "2-digit", year: "numeric" }),
+    "Simplot Foods      Boise, ID 83706",
+    "Delivery 1      " + new Date(Date.now() + 2 * 864e5).toLocaleDateString("en-US", { month: "2-digit", day: "2-digit", year: "numeric" }),
+    "Walmart DC 6091      Denver, CO 80216",
+    "Commodity: Frozen Potatoes        Weight: 42,500 lbs",
+    "Total Miles: 500",
+    "Total Carrier Pay      $2,000.00",
+  ]);
+  const t0 = Date.now();
+  await dispatcher.locator('input[data-role="ratecon"]').setInputFiles({ name: "ratecon.pdf", mimeType: "application/pdf", buffer: rc });
+  await dispatcher.locator(".scanmsg.ok").waitFor({ timeout: 60000 });
+  timings.push(["Read a rate con PDF", Date.now() - t0]);
+  const val = (l) => dispatcher.getByLabel(l, { exact: true }).inputValue();
+  const got = { origin: await val("Pickup (City, ST)"), dest: await val("Delivery (City, ST)"), rate: await val("Rate ($)"), miles: await val("Loaded miles"), broker: await val("Broker"), no: await val("Load #") };
+  if (got.origin !== "Boise, ID" || got.dest !== "Denver, CO" || Number(got.rate) !== 2000 || got.miles !== "500" || got.broker !== "TQL" || got.no !== "4471823")
+    throw new Error("Rate con read wrong: " + JSON.stringify(got));
+  if ((await dispatcher.getByLabel("Truck", { exact: true }).inputValue()) === "") throw new Error("Truck # 7 on the rate con didn't pick Unit 7");
   const fee = await dispatcher.getByLabel("Dispatch fee ($)").inputValue();
   if (fee !== "160.00") throw new Error("Fee auto-fill was " + fee);
-  await dispatcher.getByLabel("Paperwork type").selectOption("Rate con");
-  await dispatcher.locator('input[data-role="camera"]').first().setInputFiles({ name: "ratecon.png", mimeType: "image/png", buffer: noisyPng(1200, 1600) });
-  await dispatcher.locator(".scan-item").first().waitFor();
-  await dispatcher.getByRole("button", { name: "Book load", exact: true }).click();
+  await dispatcher.locator("select[name=driverId] option", { hasText: "Drew Driver" }).waitFor({ state: "attached" });
+  await dispatcher.getByLabel("Driver", { exact: true }).selectOption({ label: "Drew Driver" });
+  await dispatcher.getByRole("button", { name: "Save load", exact: true }).click();
   await toast(dispatcher, "Load booked with paperwork");
-  await dispatcher.locator("td", { hasText: "Boise, ID → Denver, CO" }).first().waitFor();
+  await dispatcher.locator(".item-lane", { hasText: "Boise, ID → Denver, CO" }).first().waitFor();
 });
 
 await run("Driver sees the load appear live without refreshing, with no rate or fee shown", async () => {
@@ -315,9 +337,9 @@ await run("Rate con scanned while booking shows up for the carrier (pre-approved
   await carrier.locator(".row", { hasText: "Rate con" }).first().waitFor();
 });
 
-await run("Dispatcher scans a lumper receipt onto the load from the load board", async () => {
+await run("Dispatcher scans a lumper receipt onto the load from its Paperwork button", async () => {
   await nav(dispatcher, "Loads");
-  const row = dispatcher.locator("tr", { hasText: "Boise, ID → Denver, CO" }).first();
+  const row = dispatcher.locator(".item", { hasText: "Boise, ID → Denver, CO" }).first();
   await row.getByRole("button", { name: /Scan paperwork/ }).click();
   const dlg = dispatcher.locator("dialog[open]");
   await dlg.getByLabel("Type").selectOption("Lumper");
@@ -378,16 +400,125 @@ await run("Driver sees the $300 paystub", async () => {
   await driver.locator("details.stub", { hasText: "$300.00" }).first().waitFor();
 });
 
-await run("Carrier money adds up: $2,000 gross − $160 fee − $300 driver = $1,540 net", async () => {
-  await nav(carrier, "Overview");
+await run("Carrier money adds up: $2,000 gross − $160 fee − $300 driver = $1,540 profit", async () => {
+  await nav(carrier, "Summary");
   for (const v of ["$2,000.00", "$160.00", "$300.00", "$1,540.00"]) await carrier.locator(".stat-value", { hasText: v }).first().waitFor();
 });
 
 await run("Owner marks the fee paid and the carrier's 'owed' drops to $0 live", async () => {
-  await nav(owner, "Loads");
+  await nav(owner, "Overview");
   await owner.locator("tr", { hasText: "Boise, ID → Denver, CO" }).getByRole("checkbox").check();
   const owed = carrier.locator(".stat", { hasText: "Owed to dispatch" }).locator(".stat-value");
   await owed.filter({ hasText: "$0.00" }).waitFor();
+});
+
+// ---------- 5b. Carrier bookkeeping (the Dijla ops system) ----------
+await run("Carrier sets factoring to GAP at 2%", async () => {
+  await nav(carrier, "Settings");
+  await carrier.getByLabel("Factoring company").fill("GAP");
+  await carrier.getByLabel("Factoring fee (%)").fill("2");
+  await carrier.getByRole("button", { name: "Save settings" }).click();
+  await toast(carrier, "Settings saved");
+});
+
+await run("Carrier marks the load Paid and records the $1,800 factoring deposit", async () => {
+  await nav(carrier, "Loads");
+  await carrier.locator('[aria-label="Stage"] .chip').nth(1).click(); // "All"
+  const item = carrier.locator(".item", { hasText: "Boise, ID → Denver, CO" }).first();
+  await item.getByRole("button", { name: "Paid", exact: true }).click();
+  await toast(carrier, "Marked Paid");
+  await item.getByLabel(/Deposit for load/).fill("1800");
+  await item.getByRole("button", { name: "Save deposit" }).click();
+  await toast(carrier, "Deposit saved");
+  await item.getByText("fuel/advances kept back $160.00").waitFor();
+});
+
+await run("Carrier scans a fuel receipt and the expense fills itself in", async () => {
+  await nav(carrier, "Expenses");
+  await carrier.getByRole("button", { name: "+ Add expense" }).click();
+  const receipt = await textPdf([
+    "PILOT TRAVEL CENTER #412", "Boise, ID 83709", new Date().toLocaleDateString("en-US", { month: "2-digit", day: "2-digit", year: "numeric" }),
+    "Fuel type Diesel #2 ULSD    Pump 14", "TRKDS   Gallons 118.432   Price/Gal $3.899", "Total Sale $461.77", "Unit # 7    Odometer 452311",
+    "GAP Factoring Fleet One   Card ending 4417", "Trans # 883402   Auth 552190", "Thank you for choosing Pilot Flying J. Driver signature on file."]);
+  await carrier.locator('input[data-role="bill"]').setInputFiles({ name: "fuel.pdf", mimeType: "application/pdf", buffer: receipt });
+  await carrier.locator(".scanmsg.ok").waitFor({ timeout: 60000 });
+  if ((await carrier.getByLabel("Amount ($)").inputValue()) !== "461.77") throw new Error("Amount not read");
+  if ((await carrier.getByLabel("Gallons").inputValue()) !== "118.432") throw new Error("Gallons not read");
+  if ((await carrier.getByLabel("Paid with").inputValue()) !== "factor") throw new Error("GAP fuel card not detected");
+  await carrier.getByRole("button", { name: "Save expense" }).click();
+  await toast(carrier, "Expense added");
+  await carrier.locator(".item", { hasText: "$461.77" }).first().waitFor();
+  await carrier.locator(".stat", { hasText: "On GAP card" }).locator(".stat-value", { hasText: "$461.77" }).waitFor();
+  await carrier.locator(".item", { hasText: "$461.77" }).getByRole("button", { name: "Receipt" }).waitFor();
+});
+
+await run("Carrier adds monthly insurance and past-due charges post themselves once", async () => {
+  await carrier.getByRole("button", { name: "Recurring" }).click();
+  await carrier.getByRole("button", { name: "+ Add recurring charge" }).click();
+  const f = carrier.locator(".form-card");
+  await f.getByLabel("Name").fill("Progressive insurance");
+  await f.getByLabel("Category").selectOption("Insurance");
+  await f.getByLabel("Amount ($)").fill("1200");
+  await f.getByLabel("First charge date").fill(iso(-45));
+  await f.getByRole("button", { name: "Save", exact: true }).click();
+  await toast(carrier, "Recurring charge added");
+  await toast(carrier, "Added 2 recurring charges");
+  await carrier.locator(".stat", { hasText: "Fixed costs / month" }).locator(".stat-value", { hasText: "$1,200.00" }).waitFor();
+  await carrier.getByRole("button", { name: "All expenses" }).click();
+  await carrier.locator(".chip", { hasText: "All time" }).first().click();
+  await carrier.waitForTimeout(1500); // a second device/listener must not double-post
+  const n = await carrier.locator(".item", { hasText: "Progressive insurance" }).count();
+  if (n !== 2) throw new Error(`Expected 2 posted insurance charges, found ${n}`);
+});
+
+await run("Summary shows GAP fees and GAP fuel per truck and in total", async () => {
+  await nav(carrier, "Summary");
+  const row = (label) => carrier.locator("table.sum tr", { hasText: label }).first();
+  await row("GAP fees").getByText("-$40").first().waitFor();
+  await row("GAP fuel & deductions").getByText("-$462").first().waitFor();
+  await carrier.locator("table.sum th", { hasText: "Unit 7" }).waitFor();
+});
+
+await run("1099 counts the load in the quarter it was paid, and the PDF opens", async () => {
+  await nav(carrier, "1099");
+  await carrier.locator(".stat", { hasText: "Gross paid" }).locator(".stat-value", { hasText: "$2,000.00" }).waitFor();
+  const [popup] = await Promise.all([carrier.waitForEvent("popup"), carrier.getByRole("button", { name: "View PDF" }).click()]);
+  await popup.waitForURL(/^blob:/, { timeout: 20000 });
+  await popup.close();
+});
+
+await run("Loads report PDF opens", async () => {
+  await nav(carrier, "Loads");
+  await carrier.getByRole("button", { name: "Loads report" }).click();
+  await carrier.locator(".chip", { hasText: "All time" }).first().click();
+  const [popup] = await Promise.all([carrier.waitForEvent("popup"), carrier.getByRole("button", { name: "View PDF" }).click()]);
+  await popup.waitForURL(/^blob:/, { timeout: 20000 });
+  await popup.close();
+});
+
+await run("Carrier books its own load (no dispatcher, no dispatch fee)", async () => {
+  await carrier.getByRole("button", { name: "+ New load" }).click();
+  await carrier.getByLabel("Pickup (City, ST)").fill("Nampa, ID");
+  await carrier.getByLabel("Delivery (City, ST)").fill("Salt Lake City, UT");
+  await carrier.getByLabel("Rate ($)").fill("1100");
+  if (await carrier.getByLabel("Dispatch fee ($)").count()) throw new Error("Carrier should not see a dispatch fee field");
+  await carrier.getByRole("button", { name: "Save load", exact: true }).click();
+  await toast(carrier, "Load booked");
+  await carrier.locator(".item-lane", { hasText: "Nampa, ID → Salt Lake City, UT" }).first().waitFor();
+});
+
+await run("Owner sees every carrier or picks one: Summary, Expenses, Accounts", async () => {
+  await nav(owner, "Summary");
+  await owner.locator("table.sum th", { hasText: "Test Carrier A" }).waitFor();
+  await owner.getByLabel("Carrier", { exact: true }).selectOption({ label: "Test Carrier A" });
+  await owner.locator("table.sum th", { hasText: "Unit 7" }).waitFor();
+  await nav(owner, "Expenses");
+  await owner.locator(".chip", { hasText: "All time" }).first().click();
+  await owner.locator(".item", { hasText: "$461.77" }).first().waitFor();
+  await nav(owner, "Accounts");
+  await owner.getByLabel("Role", { exact: true }).selectOption("driver");
+  await owner.locator("tr", { hasText: "Drew Driver" }).waitFor();
+  if (await owner.locator("tr", { hasText: "Carla Carrier" }).count()) throw new Error("Role filter didn't filter");
 });
 
 // ---------- 6. Lane request round trip ----------
@@ -435,7 +566,7 @@ await run("Driver screens fit a phone with no sideways scrolling", async () => {
 });
 
 await run("Owner, carrier and dispatcher pages fit a phone", async () => {
-  for (const [who, p, views] of [["owner", owner, ["Overview", "Loads", "Carriers", "Team"]], ["carrier", carrier, ["Overview", "Drivers & trucks", "Documents", "Paystubs"]], ["dispatcher", dispatcher, ["Tasks", "Loads"]]]) {
+  for (const [who, p, views] of [["owner", owner, ["Overview", "Summary", "Loads", "Expenses", "Accounts", "Carriers"]], ["carrier", carrier, ["Summary", "Loads", "Expenses", "1099", "Drivers & trucks", "Documents", "Paystubs"]], ["dispatcher", dispatcher, ["Tasks", "Loads"]]]) {
     await p.setViewportSize({ width: 390, height: 844 });
     for (const v of views) {
       await nav(p, v);
@@ -499,23 +630,33 @@ await run("Owner Overview loads with the full volume", async () => {
 await run("Owner switches to the Loads page with the full volume", async () => {
   const t0 = Date.now();
   await nav(owner, "Loads");
-  await owner.locator("table tbody tr").nth(99).waitFor({ timeout: 60000 });
+  await owner.locator(".items .item").nth(49).waitFor({ timeout: 60000 });
   timings.push(["Owner Loads page (volume)", Date.now() - t0]);
 });
 
-await run("Load board search finds one load among 2,000", async () => {
+await run("Loads search finds one load among 2,000", async () => {
   const t0 = Date.now();
-  await owner.getByLabel("Search loads").fill("Boise, ID → Denver");
-  await owner.waitForFunction(() => document.querySelectorAll("table tbody tr").length === 1, null, { timeout: 15000 });
+  await owner.locator('[aria-label="Stage"] .chip').nth(1).click(); // "All"
+  await owner.getByLabel("Search loads").fill("4471823");
+  await owner.waitForFunction(() => document.querySelectorAll(".items .item").length === 1, null, { timeout: 15000 });
   timings.push(["Search 2,000 loads", Date.now() - t0]);
   await owner.getByLabel("Search loads").fill("");
 });
 
-await run("Load board filter responds quickly at volume", async () => {
+await run("Loads stage filter responds quickly at volume", async () => {
   const t0 = Date.now();
-  await owner.getByRole("button", { name: "In transit" }).click();
-  await owner.waitForFunction(() => [...document.querySelectorAll("table tbody tr td:last-child select")].every((s) => s.value === "in_transit"), null, { timeout: 30000 });
-  timings.push(["Filter load board to In transit (volume)", Date.now() - t0]);
+  await owner.locator('[aria-label="Stage"] .chip', { hasText: "In transit" }).click();
+  await owner.waitForFunction(() => { const it = [...document.querySelectorAll(".items .item")]; return it.length && it.every((x) => x.classList.contains("st-in_transit")); }, null, { timeout: 30000 });
+  timings.push(["Filter loads to In transit (volume)", Date.now() - t0]);
+});
+
+await run("Owner Summary across 41 carriers at volume", async () => {
+  const t0 = Date.now();
+  await nav(owner, "Summary");
+  await owner.getByLabel("Carrier", { exact: true }).selectOption("all");
+  await owner.locator(".chip", { hasText: "All time" }).first().click();
+  await owner.locator("table.sum th", { hasText: "Volume Carrier 40" }).waitFor({ timeout: 60000 });
+  timings.push(["Owner Summary, all carriers, all time (volume)", Date.now() - t0]);
 });
 
 await run("An all-carriers dispatcher loads Tasks across 41 carriers", async () => {
@@ -535,8 +676,8 @@ await run("An all-carriers dispatcher loads Tasks across 41 carriers", async () 
 await run("Carrier's own dashboard is unaffected by other carriers' volume", async () => {
   const t0 = Date.now();
   await home(carrier);
-  await heading(carrier, "Overview");
-  await carrier.locator(".stat-value", { hasText: "$2,000.00" }).first().waitFor();
+  await heading(carrier, "Summary");
+  await carrier.locator(".stat-value", { hasText: "$3,100.00" }).first().waitFor(); // their two loads, nobody else's
   timings.push(["Carrier Overview while system holds volume", Date.now() - t0]);
   const body = await carrier.locator("body").innerText();
   if (/Volume Carrier|City \d+, ID/.test(body)) throw new Error("Carrier can see other carriers' data");

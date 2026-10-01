@@ -181,7 +181,27 @@ await deny("carrier admin lists ALL loads", () => getDocs(collection(a, "loads")
 await allow("carrier admin reads own load money", () => getDocs(q(a, "loadMoney", eq("carrierId", "A"))));
 await deny("carrier admin lowers the dispatch fee", () => updateDoc(doc(a, "loadMoney/L1"), { fee: 0 }));
 await deny("carrier admin marks own fee as paid", () => updateDoc(doc(a, "loadMoney/L1"), { feePaid: true }));
-await deny("carrier admin books a load", () => addDoc(collection(a, "loads"), { carrierId: "A" }));
+await allow("carrier admin books their own load (no dispatcher)", () => addDoc(collection(a, "loads"), { carrierId: "A", status: "booked" }));
+await deny("carrier admin books a load posing as a dispatcher", () => addDoc(collection(a, "loads"), { carrierId: "A", dispatcherId: "dispA" }));
+await deny("carrier admin books a load for carrier B", () => addDoc(collection(a, "loads"), { carrierId: "B" }));
+await allow("carrier admin records money on their own load with no dispatch fee", () => setDoc(doc(a, "loadMoney/SELF1"), { carrierId: "A", rate: 1100, fee: 0, feePaid: false, factored: true }));
+await deny("carrier admin creates load money with a dispatch fee", () => setDoc(doc(a, "loadMoney/SELF2"), { carrierId: "A", rate: 1100, fee: 50, feePaid: false }));
+await allow("carrier admin changes the rate on their self-booked load", () => updateDoc(doc(a, "loadMoney/SELF1"), { rate: 1150 }));
+await deny("carrier admin changes the rate on a dispatched load", () => updateDoc(doc(a, "loadMoney/L1"), { rate: 9999 }));
+await allow("carrier admin records the factoring deposit", () => updateDoc(doc(a, "loadMoney/L1"), { deposit: 1800, factored: true }));
+await allow("carrier admin marks their load Paid", () => updateDoc(doc(a, "loads/L2"), { status: "paid", paidAt: "2026-10-01" }));
+await deny("carrier admin re-assigns a load's dispatcher", () => updateDoc(doc(a, "loads/L2"), { dispatcherId: "adminA" }));
+await deny("carrier admin moves a load to carrier B", () => updateDoc(doc(a, "loads/L2"), { carrierId: "B" }));
+await deny("carrier admin edits carrier B's load", () => updateDoc(doc(a, "loads/L3"), { status: "paid" }));
+await allow("carrier admin sets their factoring company and %", () => updateDoc(doc(a, "carriers/A"), { factorName: "GAP", factorPct: 2 }));
+await deny("carrier admin renames their company record", () => updateDoc(doc(a, "carriers/A"), { name: "Renamed" }));
+await deny("carrier admin edits carrier B's factoring", () => updateDoc(doc(a, "carriers/B"), { factorPct: 0 }));
+await allow("carrier admin adds an expense", () => addDoc(collection(a, "expenses"), { carrierId: "A", cat: "Fuel", amount: 461.77 }));
+await allow("carrier admin lists own expenses (app query)", () => getDocs(q(a, "expenses", eq("carrierId", "A"))));
+await deny("carrier admin adds an expense to carrier B", () => addDoc(collection(a, "expenses"), { carrierId: "B", cat: "Fuel", amount: 1 }));
+await deny("carrier admin reads carrier B's expenses", () => getDocs(q(a, "expenses", eq("carrierId", "B"))));
+await allow("carrier admin adds a recurring charge", () => addDoc(collection(a, "recurring"), { carrierId: "A", name: "Insurance", amount: 1200, freq: "m1" }));
+await deny("carrier admin reads carrier B's recurring charges", () => getDocs(q(a, "recurring", eq("carrierId", "B"))));
 await allow("carrier admin lists own drivers (app query)", () => getDocs(q(a, "users", eq("carrierId", "A"), eq("role", "driver"))));
 await deny("carrier admin lists carrier B drivers", () => getDocs(q(a, "users", eq("carrierId", "B"), eq("role", "driver"))));
 await deny("carrier admin lists every user", () => getDocs(collection(a, "users")));
@@ -215,6 +235,17 @@ await allow("carrier admin issues a paystub", () => addDoc(collection(a, "paystu
 await deny("carrier admin issues a paystub for carrier B", () => addDoc(collection(a, "paystubs"), { carrierId: "B", driverId: "drvB1", net: 100 }));
 await deny("carrier admin reads pending sign-ups", () => getDocs(q(a, "users", eq("role", "pending"))));
 
+// ---------- Expenses walls ----------
+await env.withSecurityRulesDisabled(async (c) => {
+  await setDoc(doc(c.firestore(), "expenses/EA"), { carrierId: "A", cat: "Insurance", amount: 1200 });
+  await setDoc(doc(c.firestore(), "expenses/EB"), { carrierId: "B", cat: "Fuel", amount: 300 });
+});
+await deny("driver reads company expenses", () => getDocs(q(d, "expenses", eq("carrierId", "A"))));
+await deny("driver adds an expense", () => addDoc(collection(d, "expenses"), { carrierId: "A", cat: "Fuel", amount: 1 }));
+await deny("carrier B admin deletes carrier A's expense", () => deleteDoc(doc(as("adminB"), "expenses/EA")));
+await deny("carrier admin moves an expense to carrier B", () => updateDoc(doc(a, "expenses/EA"), { carrierId: "B" }));
+await allow("carrier admin deletes own expense", () => deleteDoc(doc(a, "expenses/EA")));
+
 // ---------- Dispatcher ----------
 const s = as("dispA");
 await allow("dispatcher reads assigned carrier", () => getDoc(doc(s, "carriers/A")));
@@ -237,6 +268,8 @@ await deny("dispatcher answers another carrier's request", () => updateDoc(doc(s
 await deny("dispatcher rewrites the request text", () => updateDoc(doc(s, "requests/R1"), { text: "changed" }));
 await deny("dispatcher assigns themselves all carriers", () => updateDoc(doc(s, "users/dispA"), { allCarriers: true }));
 await deny("dispatcher adds carrier B to their list", () => updateDoc(doc(s, "users/dispA"), { assignedCarriers: ["A", "B"] }));
+await deny("dispatcher reads a carrier's expenses", () => getDocs(q(s, "expenses", eq("carrierId", "A"))));
+await deny("dispatcher reads a carrier's recurring charges", () => getDocs(q(s, "recurring", eq("carrierId", "A"))));
 await deny("dispatcher reads driver paystubs", () => getDocs(q(s, "paystubs", eq("carrierId", "A"))));
 await deny("dispatcher creates invites", () => setDoc(doc(s, "invites/DX"), { role: "driver", carrierId: "A", used: false, createdBy: "dispA" }));
 await deny("dispatcher creates a carrier", () => addDoc(collection(s, "carriers"), { name: "Fake" }));
@@ -265,6 +298,9 @@ await allow("owner assigns carriers to a dispatcher", () => updateDoc(doc(o, "us
 await allow("owner creates a carrier-admin invite", () => setDoc(doc(o, "invites/OWNCA"), { role: "carrierAdmin", carrierId: "A", used: false, createdBy: "owner" }));
 await allow("owner lists open invites (app query)", () => getDocs(q(o, "invites", eq("used", false))));
 await allow("owner marks a fee paid", () => updateDoc(doc(o, "loadMoney/L1"), { feePaid: true }));
+await allow("owner lists every carrier's expenses", () => getDocs(collection(o, "expenses")));
+await allow("owner lists every recurring charge", () => getDocs(collection(o, "recurring")));
+await allow("owner edits any carrier's settings", () => updateDoc(doc(o, "carriers/B"), { factorName: "RTS", factorPct: 2.5, feePercent: 7 }));
 await allow("owner reads any scan", () => getDoc(doc(o, "docFiles/D3")));
 
 // ---------- Report ----------

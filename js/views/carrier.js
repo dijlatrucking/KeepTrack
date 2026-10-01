@@ -2,6 +2,7 @@ import { db, collection, doc, addDoc, setDoc, updateDoc, deleteDoc, query, where
 import { h, card, table, stat, money, num, field, input, select, btn, formToObj, guard, inviteCode, pill, fmtDate, ago, toDate, toast } from "../ui.js";
 import { watch, byNewest, driverPayFor } from "../data.js";
 import { lane, shortId, openDoc, scanPicker, saveScans } from "../components.js";
+import { summaryView, loadsView, expensesView, taxView, carrierSettingsCard } from "../ops.js";
 
 const cid = (ctx) => ctx.profile.carrierId;
 const q = (ctx, coll, ...w) => query(collection(db, coll), where("carrierId", "==", cid(ctx)), ...w);
@@ -14,48 +15,6 @@ function carrierData(ctx, cb) {
   ctx.sub(watch(q(ctx, "loads"), (r) => { s.loads = r; cb(s); }));
   ctx.sub(watch(q(ctx, "loadMoney"), (r) => { s.money = new Map(r.map((m) => [m.id, m])); cb(s); }));
   ctx.sub(watch(q(ctx, "users", where("role", "==", "driver")), (r) => { s.drivers = r; cb(s); }));
-}
-
-function overview(ctx, root) {
-  const tiles = h("div", { class: "stats" });
-  const loadsBody = h("div");
-  const periodSel = select("period", [{ value: "week", label: "Last 7 days" }, { value: "month", label: "Last 30 days" }, { value: "all", label: "All time" }], { "aria-label": "Period" });
-  let last = null;
-  const draw = (s) => {
-    last = s;
-    const days = periodSel.value === "week" ? 7 : periodSel.value === "month" ? 30 : null;
-    const since = days ? Date.now() - days * 86400000 : 0;
-    const inPeriod = s.loads.filter((l) => l.status !== "cancelled" && (!days || (toDate(l.pickupDate || l.createdAt)?.getTime() || 0) >= since));
-    const drivers = new Map(s.drivers.map((d) => [d.id, d]));
-    let gross = 0, fee = 0, owed = 0, pay = 0;
-    const rows = inPeriod.map((l) => {
-      const m = s.money.get(l.id) || {};
-      const dp = driverPayFor(l, m.rate, drivers.get(l.driverId));
-      gross += num(m.rate); fee += num(m.fee); pay += dp;
-      if (!m.feePaid) owed += num(m.fee);
-      return { ...l, rate: m.rate, fee: m.fee, feePaid: m.feePaid, dp, net: num(m.rate) - num(m.fee) - dp };
-    }).sort(byNewest);
-    tiles.replaceChildren(
-      stat("Load gross", money(gross)),
-      stat("Dispatch fees", money(fee)),
-      stat("Owed to dispatch", money(owed), "Unpaid fees"),
-      stat("Driver pay", money(pay), "From each driver's pay setup"),
-      stat("Carrier net", money(gross - fee - pay)));
-    loadsBody.replaceChildren(table([
-      { label: "Load", cell: (l) => h("span", { class: "mono" }, shortId(l.id)) },
-      { label: "Lane", cell: lane },
-      { label: "Driver · Truck", cell: (l) => [l.driverName, l.truckUnit].filter(Boolean).join(" · ") || "—" },
-      { label: "Pickup", cell: (l) => fmtDate(l.pickupDate) },
-      { label: "Gross", cell: (l) => h("span", { class: "mono" }, money(l.rate)), align: "right" },
-      { label: "Fee", cell: (l) => h("span", { class: "mono" }, money(l.fee)), align: "right" },
-      { label: "Driver pay", cell: (l) => h("span", { class: "mono" }, money(l.dp)), align: "right" },
-      { label: "Net", cell: (l) => h("span", { class: "mono strong" }, money(l.net)), align: "right" },
-      { label: "Status", cell: (l) => pill(l.status) },
-    ], rows, "No loads in this period."));
-  };
-  periodSel.addEventListener("change", () => last && draw(last));
-  carrierData(ctx, draw);
-  root.append(card("Money · full breakdown", periodSel, tiles), card("Loads", null, loadsBody));
 }
 
 function people(ctx, root) {
@@ -216,7 +175,7 @@ function paystubs(ctx, root) {
     const d = state.drivers.find((x) => x.id === driverSel.value);
     if (!d || !from.value || !to.value) { preview.replaceChildren(); return null; }
     const a = toDate(from.value).getTime() - 43200000, b = toDate(to.value).getTime() + 43200000;
-    const loads = state.loads.filter((l) => l.driverId === d.id && l.status === "delivered" && (() => { const t = toDate(l.deliverBy || l.pickupDate || l.createdAt)?.getTime() || 0; return t >= a && t <= b; })())
+    const loads = state.loads.filter((l) => l.driverId === d.id && ["delivered", "paid"].includes(l.status) && (() => { const t = toDate(l.deliverBy || l.pickupDate || l.createdAt)?.getTime() || 0; return t >= a && t <= b; })())
       .map((l) => ({ id: l.id, lane: lane(l), miles: num(l.miles), pay: Math.round(driverPayFor(l, state.money.get(l.id)?.rate, d) * 100) / 100 }));
     const total = loads.reduce((s, l) => s + l.pay, 0);
     preview.replaceChildren(table([
@@ -261,10 +220,16 @@ function paystubs(ctx, root) {
   root.append(card("Issue a paystub", null, form), card("Issued paystubs", null, issued));
 }
 
+const mine = (ctx) => [ctx.profile.carrierId];
+
 export default [
-  { id: "overview", label: "Overview", render: overview },
+  { id: "summary", label: "Summary", render: (ctx, root) => summaryView(ctx, root, mine(ctx)) },
+  { id: "loads", label: "Loads", render: (ctx, root) => loadsView(ctx, root, mine(ctx)) },
+  { id: "expenses", label: "Expenses", render: (ctx, root) => expensesView(ctx, root, mine(ctx)) },
+  { id: "tax", label: "1099", render: (ctx, root) => taxView(ctx, root, mine(ctx)) },
   { id: "people", label: "Drivers & trucks", render: people },
   { id: "documents", label: "Documents", render: documents },
   { id: "requests", label: "Requests", render: requests },
   { id: "paystubs", label: "Paystubs", render: paystubs },
+  { id: "settings", label: "Settings", render: (ctx, root) => root.append(carrierSettingsCard(ctx, ctx.carriers.find((c) => c.id === ctx.profile.carrierId) || { id: ctx.profile.carrierId })) },
 ];

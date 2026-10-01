@@ -76,6 +76,8 @@ service cloud.firestore {
     match /carriers/{cid} {
       allow read: if manages(cid) || isDriverIn(cid);
       allow write: if isOwner();
+      // carrier admins keep their own factoring + alert settings; name, MC/DOT and dispatch fee % stay with the owner
+      allow update: if isCarrierAdmin(cid) && onlyChanges(['factorName', 'factorPct', 'ageDays', 'countBy', 'phone']);
     }
 
     match /trucks/{id} {
@@ -88,8 +90,12 @@ service cloud.firestore {
     match /loads/{id} {
       allow read: if manages(resource.data.carrierId)
         || (isDriverIn(resource.data.carrierId) && resource.data.driverId == request.auth.uid);
-      allow create: if staff(request.resource.data.carrierId);
+      // carrier admins may also book their own loads (no dispatcher, no dispatch fee) and keep their loads up to date
+      allow create: if staff(request.resource.data.carrierId)
+        || (isCarrierAdmin(request.resource.data.carrierId) && request.resource.data.get('dispatcherId', null) == null);
       allow update: if (staff(resource.data.carrierId) && keepsCarrier())
+        || (isCarrierAdmin(resource.data.carrierId) && keepsCarrier()
+            && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['dispatcherId', 'dispatcherName']))
         || (isDriverIn(resource.data.carrierId) && resource.data.driverId == request.auth.uid
             && onlyChanges(['status', 'updatedAt'])
             && request.resource.data.status in ['in_transit', 'delivered']);
@@ -98,9 +104,29 @@ service cloud.firestore {
 
     match /loadMoney/{id} {
       allow read: if manages(resource.data.carrierId);
-      allow create: if staff(request.resource.data.carrierId);
-      allow update: if staff(resource.data.carrierId) && keepsCarrier();
+      allow create: if staff(request.resource.data.carrierId)
+        || (isCarrierAdmin(request.resource.data.carrierId) && request.resource.data.get('fee', 0) == 0 && request.resource.data.get('feePaid', false) == false);
+      // carrier admins record factoring + deposits; they can't touch the dispatch fee, and can only change the
+      // rate on loads they booked themselves (no dispatch fee)
+      allow update: if (staff(resource.data.carrierId) && keepsCarrier())
+        || (isCarrierAdmin(resource.data.carrierId) && keepsCarrier()
+            && (onlyChanges(['factored', 'deposit'])
+                || (resource.data.get('fee', 0) == 0 && onlyChanges(['rate', 'factored', 'deposit']))));
       allow delete: if isOwner();
+    }
+
+    // Carrier bookkeeping: expenses and recurring charges. Owner + that carrier's admin only.
+    match /expenses/{id} {
+      allow read: if isOwner() || isCarrierAdmin(resource.data.carrierId);
+      allow create: if isOwner() || isCarrierAdmin(request.resource.data.carrierId);
+      allow update: if (isOwner() || isCarrierAdmin(resource.data.carrierId)) && keepsCarrier();
+      allow delete: if isOwner() || isCarrierAdmin(resource.data.carrierId);
+    }
+    match /recurring/{id} {
+      allow read: if isOwner() || isCarrierAdmin(resource.data.carrierId);
+      allow create: if isOwner() || isCarrierAdmin(request.resource.data.carrierId);
+      allow update: if (isOwner() || isCarrierAdmin(resource.data.carrierId)) && keepsCarrier();
+      allow delete: if isOwner() || isCarrierAdmin(resource.data.carrierId);
     }
 
     // Paperwork flows up: driver uploads (pending) → dispatch approves → carrier + owner see it.
