@@ -1,0 +1,15 @@
+{
+  "name": "KeepTrack",
+  "short_name": "KeepTrack",
+  "description": "Loads, paperwork and pay for carriers, dispatchers and drivers.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "browser",
+  "background_color": "#F3F2EE",
+  "theme_color": "#FFFFFF",
+  "icons": [
+    { "src": "img/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "img/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "img/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

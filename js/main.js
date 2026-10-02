@@ -28,7 +28,7 @@ let signingUp = false;
 let lastPassword = ""; // the password just typed at sign-in (to finish a "pick your own password" without asking twice)
 let askedNewPassword = false;
 
-const brand = () => h("span", { class: "brand" }, h("span", { class: "brand-mark", "aria-hidden": "true" }, "✓"), h("span", null, "KeepTrack"));
+const brand = () => h("img", { class: "brand-logo", src: "img/keeptrack-logo.svg", alt: "KeepTrack", width: "161", height: "28" });
 
 function clearView() {
   viewSubs.forEach((u) => { try { u(); } catch (_) {} });
@@ -179,7 +179,7 @@ function renderPending(user, profile) {
 // Public pages (sign in, waiting, setup) share a plain site header and footer.
 function publicPage(...body) {
   return h("div", { class: "site" },
-    h("header", { class: "site-header" }, h("div", { class: "site-header-inner" }, brand())),
+    h("header", { class: "site-header" }, h("div", { class: "site-header-inner" }, h("span", { class: "brand-link" }, brand()))),
     h("main", { class: "site-main auth" }, ...body),
     h("footer", { class: "site-footer" }, h("div", { class: "site-footer-inner" },
       h("span", null, `© ${new Date().getFullYear()} KeepTrack · A Spartan Groups LLC service`))));

@@ -141,7 +141,7 @@ async function makeReport() {
   const notIn = live.filter((d) => !d.driveFileId && !d.fileFreed);
   const failed = notIn.filter((d) => lastFailures.has(d.id)).map((d) => ({ paper: `${paperOf(d)} (${carrierOf(d)})`, why: lastFailures.get(d.id) }));
   const data = await backupPdf({
-    title: "KeepTrack backup report", sub: "Up to date as of " + new Date().toLocaleString([], { dateStyle: "medium", timeStyle: "short" }),
+    title: "Backup report", sub: "Up to date as of " + new Date().toLocaleString([], { dateStyle: "medium", timeStyle: "short" }),
     rows, missing, failed, notYet: notIn.length - failed.length,
   });
   const j = await driveCall({ savePdf: REPORT_NAME, data });

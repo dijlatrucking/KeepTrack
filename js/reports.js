@@ -12,18 +12,54 @@ const script = (src) => loaded[src] || (loaded[src] = new Promise((ok, bad) => {
   document.head.append(s);
 }));
 
+// The white KeepTrack logo for the dark band at the top of each report, drawn once as a picture.
+// (If it can't be loaded, the band says "KeepTrack" in plain text instead.)
+const BAND = [21, 23, 28];
+const LOGO_BASELINE = 726 / 923; // where the logo's baseline sits, from its top (ascender 726, descender 197)
+let bandLogo = null;
+function loadBandLogo() {
+  if (!bandLogo) bandLogo = (async () => {
+    const img = new Image();
+    img.src = new URL("../img/keeptrack-logo-white.svg", import.meta.url).href;
+    await img.decode();
+    const h = 120, w = Math.round(h * img.naturalWidth / img.naturalHeight);
+    const c = document.createElement("canvas");
+    c.width = w; c.height = h;
+    const g = c.getContext("2d");
+    g.fillStyle = `rgb(${BAND.join(",")})`; g.fillRect(0, 0, w, h);
+    g.drawImage(img, 0, 0, w, h);
+    return { data: c.toDataURL("image/png"), ratio: w / h };
+  })().catch((e) => { console.warn("Report logo", e); return null; });
+  return bandLogo;
+}
+
 async function newDoc(landscape) {
   await script(JSPDF);
   await script(AUTOTABLE);
   const { jsPDF } = window.jspdf;
-  return new jsPDF({ unit: "pt", format: "letter", orientation: landscape ? "landscape" : "portrait" });
+  const doc = new jsPDF({ unit: "pt", format: "letter", orientation: landscape ? "landscape" : "portrait" });
+  doc.keeptrackLogo = await loadBandLogo();
+  return doc;
 }
 
 function header(doc, title, sub) {
   const W = doc.internal.pageSize.getWidth();
-  doc.setFillColor(21, 23, 28); doc.rect(0, 0, W, 54, "F");
-  doc.setTextColor(255, 255, 255); doc.setFont("helvetica", "bold"); doc.setFontSize(15);
-  doc.text(title, 36, 33);
+  doc.setFillColor(...BAND); doc.rect(0, 0, W, 54, "F");
+  doc.setTextColor(255, 255, 255);
+  let x = 36;
+  const logo = doc.keeptrackLogo;
+  if (logo) {
+    const h = 18;
+    doc.addImage(logo.data, "PNG", x, 33 - h * LOGO_BASELINE, h * logo.ratio, h);
+    x += h * logo.ratio + 14;
+  } else {
+    doc.setFont("helvetica", "bold"); doc.setFontSize(15);
+    doc.text("KeepTrack", x, 33);
+    x += doc.getTextWidth("KeepTrack") + 14;
+  }
+  doc.setDrawColor(95, 99, 108); doc.setLineWidth(0.75); doc.line(x - 7, 20, x - 7, 36);
+  doc.setFont("helvetica", "bold"); doc.setFontSize(13);
+  doc.text(title, x, 33);
   doc.setFont("helvetica", "normal"); doc.setFontSize(9.5);
   doc.text(sub, W - 36, 33, { align: "right" });
   doc.setTextColor(21, 23, 28);

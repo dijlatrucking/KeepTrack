@@ -22,7 +22,7 @@ const BASE = `http://localhost:${PORT}/index.html`;
 rmSync(SITE, { recursive: true, force: true });
 mkdirSync(SITE, { recursive: true });
 mkdirSync(OUT, { recursive: true });
-for (const p of ["index.html", "css", "js"]) cpSync(ROOT + p, SITE + "/" + p, { recursive: true });
+for (const p of ["index.html", "manifest.webmanifest", "css", "js", "img"]) cpSync(ROOT + p, SITE + "/" + p, { recursive: true });
 const cfgPath = SITE + "/js/firebase-config.js";
 writeFileSync(cfgPath, readFileSync(cfgPath, "utf8").replace(/projectId: "[^"]+"/, `projectId: "${PROJECT}"`));
 const fbPath = SITE + "/js/fb.js";
@@ -259,6 +259,22 @@ await run("Owner signs in and lands on Overview", async () => {
   await owner.getByLabel("Password").fill("owner-pass-1");
   await owner.getByRole("button", { name: "Sign in" }).click();
   await heading(owner, "Overview");
+});
+
+await run("The KeepTrack logo shows in the header, and the tab icon, home-screen icons and manifest all load", async () => {
+  const logo = owner.locator("header img.brand-logo");
+  await logo.waitFor();
+  if (!(await logo.evaluate((img) => img.complete && img.naturalWidth > 0))) throw new Error("Header logo didn't load");
+  if ((await logo.getAttribute("alt")) !== "KeepTrack") throw new Error("Logo needs alt text");
+  const bad = await owner.evaluate(async () => {
+    const hrefs = [...document.querySelectorAll('link[rel="icon"], link[rel="apple-touch-icon"], link[rel="manifest"]')].map((l) => l.href);
+    const m = await (await fetch(document.querySelector('link[rel="manifest"]').href)).json();
+    hrefs.push(...m.icons.map((i) => new URL(i.src, document.querySelector('link[rel="manifest"]').href).href), new URL("img/keeptrack-logo-white.svg", location.href).href);
+    const out = [];
+    for (const h of hrefs) { const r = await fetch(h); if (!r.ok) out.push(h + " " + r.status); }
+    return hrefs.length < 9 ? ["only " + hrefs.length + " icon links"] : out;
+  });
+  if (bad.length) throw new Error("Missing: " + bad.join(", "));
 });
 
 // ---------- 2. Carrier requests access, owner approves ----------
@@ -1043,6 +1059,7 @@ await run("Owner backs up every scan to Drive, with a PDF report listing each on
   if (!reportSays(shouldBe.length)) throw new Error("Report doesn't say how many scans are in Drive");
   for (const want of ["Lumper receipt", "$85.00", "Test Carrier A", "Drew Driver", "W-9 Test Carrier A", "4471823 \xb7 Boise"]) if (!pdf.includes(want)) throw new Error("Report is missing: " + want);
   if (!/\/URI \(https:\/\/drive\.test\/file_/.test(pdf)) throw new Error("Report has no links to the files in Drive");
+  if (!pdf.includes("/Subtype /Image")) throw new Error("Report header has no KeepTrack logo");
   await card.getByText(/Last backup:/).waitFor();
   await card.getByText(`Backup report: ${shouldBe.length} scans in Drive`).waitFor();
   // a second backup finds nothing new and copies nothing twice, but still checks Drive and makes the report
