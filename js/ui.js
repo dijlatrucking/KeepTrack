@@ -74,6 +74,7 @@ export function pill(status, label) {
 // ("Copied 5 files to Google Drive"). Tap a pop-up to dismiss it.
 const slots = { good: null, bad: null };
 const counts = new Map(); // key → { n, until }
+const MIN_SHOW = 1500; // a message stays at least this long before a different one takes its spot
 export function toast(msg, kind = "info", { key, add = 1 } = {}) {
   let box = document.getElementById("toasts");
   if (!box) {
@@ -90,14 +91,24 @@ export function toast(msg, kind = "info", { key, add = 1 } = {}) {
   let t = slots[slot];
   if (!t || !t.el.isConnected) {
     const el = h("div", { class: "toast" });
-    t = slots[slot] = { el, timer: null };
-    el.addEventListener("click", () => { el.remove(); if (slots[slot] === t) slots[slot] = null; });
+    t = slots[slot] = { el, timer: null, wait: null, key: null, shownAt: 0 };
+    el.addEventListener("click", () => { el.remove(); clearTimeout(t.wait); if (slots[slot] === t) slots[slot] = null; });
     if (slot === "bad") box.prepend(el); else box.append(el);
   }
-  t.el.className = "toast toast-" + kind;
-  t.el.textContent = text;
-  clearTimeout(t.timer);
-  t.timer = setTimeout(() => { t.el.remove(); if (slots[slot] === t) slots[slot] = null; }, kind === "bad" ? 7000 : 3500);
+  const show = () => {
+    t.wait = null;
+    t.key = k; t.shownAt = Date.now();
+    t.el.className = "toast toast-" + kind;
+    t.el.textContent = text;
+    if (!t.el.isConnected) { if (slot === "bad") box.prepend(t.el); else box.append(t.el); slots[slot] = t; }
+    clearTimeout(t.timer);
+    t.timer = setTimeout(() => { t.el.remove(); if (slots[slot] === t) slots[slot] = null; }, kind === "bad" ? 7000 : 3500);
+  };
+  // the same message updates in place; a different one waits until the current one has been seen
+  const age = Date.now() - t.shownAt;
+  clearTimeout(t.wait);
+  if (t.key === k || !t.key || age >= MIN_SHOW) show();
+  else t.wait = setTimeout(show, MIN_SHOW - age);
 }
 
 export function card(title, actions, ...body) {
