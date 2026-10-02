@@ -89,9 +89,11 @@ function renderAuth(mode = "signin") {
       await batch.commit();
       signingUp = false;
     } catch (x) {
-      pendingAuthError = friendlyError(x);
-      if (cred) { try { await cred.user.delete(); } catch (_) {} }
       signingUp = false;
+      // Nothing was created (bad or taken username): keep what they typed and just say what's wrong.
+      if (!cred) { err.textContent = friendlyError(x); busy(signup, false); return; }
+      pendingAuthError = friendlyError(x);
+      try { await cred.user.delete(); } catch (_) {}
       renderAuth("signup");
     }
   } },
@@ -134,9 +136,10 @@ function renderAuth(mode = "signin") {
       });
       signingUp = false;
     } catch (x) {
-      pendingAuthError = friendlyError(x);
-      if (cred) { try { await cred.user.delete(); } catch (_) {} }
       signingUp = false;
+      if (!cred) { err.textContent = friendlyError(x); busy(request, false); return; }
+      pendingAuthError = friendlyError(x);
+      try { await cred.user.delete(); } catch (_) {}
       renderAuth("request");
     }
   } },
@@ -208,7 +211,8 @@ function changePassword(user) {
       toast("Password changed", "ok");
       close();
     } catch (x) {
-      err.textContent = x && x.code === "auth/invalid-credential" ? "Your current password isn't right." : friendlyError(x);
+      const wrong = x && ["auth/invalid-credential", "auth/wrong-password", "auth/invalid-login-credentials", "auth/user-mismatch"].includes(x.code);
+      err.textContent = wrong ? "Your current password isn't right." : friendlyError(x);
       form.querySelectorAll("button").forEach((b) => (b.disabled = false));
     }
   } },

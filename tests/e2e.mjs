@@ -148,6 +148,7 @@ await seed((db) => setDoc(doc(db, "users", ownerUid), { role: "owner", name: "Te
 // ---------- Harness ----------
 const results = [];
 const problems = [];
+const expectAuthFail = new Set(); // pages where a refused sign-in is the point of the step
 const timings = [];
 let step = 0;
 async function run(name, fn) {
@@ -177,7 +178,7 @@ async function open(who, viewport = { width: 1280, height: 900 }) {
   p.on("pageerror", (e) => problems.push(`[${who}] page error: ${e.message}`));
   p.on("console", (m) => {
     // people who are supposed to be turned away get 400/403 answers from sign-in; that's the point
-    const expected = ["intruder", "denied"].includes(who) && /status of 40[03]/.test(m.text());
+    const expected = (["intruder", "denied", "copycat"].includes(who) || expectAuthFail.has(who)) && /status of 40[03]/.test(m.text());
     if (m.type() === "error" && !expected && !/favicon|ERR_FAILED.*fonts/.test(m.text())) problems.push(`[${who}] console: ${m.text().slice(0, 200)}`);
     if (/^\[dupe\]/.test(m.text())) console.log(`      [${who}] ${m.text().slice(0, 200)}`);
   });
@@ -371,6 +372,7 @@ await run("A taken username is refused with a clear message, and no account is l
 });
 
 await run("Driver changes their password, signs out, and signs back in with username + new password", async () => {
+  expectAuthFail.add("driver");
   await driver.getByRole("button", { name: "Change password" }).click();
   const dlg = driver.locator("dialog[open]");
   await dlg.locator('input[name="current"]').fill("wrong-one");
@@ -392,6 +394,7 @@ await run("Driver changes their password, signs out, and signs back in with user
   await driver.getByRole("button", { name: "Sign in" }).click();
   await heading(driver, "Loads");
   await driver.getByText("Signed in as drew").waitFor();
+  expectAuthFail.delete("driver");
 });
 
 await run("Carrier sets the driver's pay to $0.60/mile on Unit 7", async () => {
