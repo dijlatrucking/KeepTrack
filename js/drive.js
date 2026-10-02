@@ -27,8 +27,8 @@ export async function pingDrive(url) {
 let sent = 0, failed = 0, timer = null;
 const report = () => {
   timer = null;
-  if (sent) toast(`Copied ${sent} file${sent === 1 ? "" : "s"} to Google Drive`, "ok");
-  if (failed) toast(`Saved in KeepTrack, but ${failed} file${failed === 1 ? "" : "s"} didn't reach Google Drive. Open Documents and tap "To Drive" to retry.`, "bad");
+  if (sent) toast((n) => `Copied ${n} file${n === 1 ? "" : "s"} to Google Drive`, "ok", { key: "drive-ok", add: sent });
+  if (failed) toast((n) => `Saved in KeepTrack, but ${n} file${n === 1 ? "" : "s"} didn't reach Google Drive. Open Documents and tap "To Drive" to retry.`, "bad", { key: "drive-bad", add: failed });
   sent = failed = 0;
 };
 

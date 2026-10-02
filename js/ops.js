@@ -301,7 +301,7 @@ function loadForm(ctx, st, ids, existing, onDone) {
     truckSel.replaceChildren(...truckOptions(st.trucks, cid, existing && existing.truckId).map((o) => h("option", { value: o.value, selected: o.selected }, o.label)));
     const ds = await getDocs(query(collection(db, "users"), where("carrierId", "==", cid), where("role", "==", "driver"))).catch(() => null);
     drivers = ds ? ds.docs.map((d) => ({ id: d.id, ...d.data() })) : [];
-    driverSel.replaceChildren(h("option", { value: "" }, "No driver"), ...drivers.map((d) => h("option", { value: d.id, selected: existing && existing.driverId === d.id }, d.name || d.email)));
+    driverSel.replaceChildren(h("option", { value: "" }, "No driver"), ...drivers.map((d) => h("option", { value: d.id, selected: existing && existing.driverId === d.id }, d.name || d.username || d.email)));
   };
   carrierSel.addEventListener("change", () => { fillPeople(); calc(); feeAuto(); });
   driverSel.addEventListener("change", () => { const d = drivers.find((x) => x.id === driverSel.value); if (d && d.truckId) truckSel.value = d.truckId; });
@@ -390,7 +390,7 @@ function loadForm(ctx, st, ids, existing, onDone) {
       miles: Math.round(num(f.miles.value)), emptyMiles: Math.round(num(f.emptyMiles.value)),
       weight: Math.round(num(f.weight.value)), commodity: f.commodity.value.trim(), notes: f.notes.value.trim(),
       truckId: truck ? truck.id : null, truckUnit: truck ? truck.unit : null,
-      driverId: driver ? driver.id : null, driverName: driver ? driver.name || driver.email : null,
+      driverId: driver ? driver.id : null, driverName: driver ? driver.name || driver.username || driver.email : null,
       updatedAt: serverTimestamp(),
     };
     const money2 = { rate: Math.round(num(rateIn.value) * 100) / 100, factored: factoredIn.checked };

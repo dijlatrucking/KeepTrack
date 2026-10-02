@@ -166,6 +166,16 @@ export async function deleteDocFlow(ctx, d, { ask = true } = {}) {
   } finally { deleting.delete(d.id); }
 }
 
+// Deletes many papers at once (a few at a time), reporting progress; one summary at the end.
+export async function bulkDeleteDocs(ctx, docs, onProgress = () => {}) {
+  let done = 0, failed = 0;
+  await pool(docs, 4, async (d) => {
+    try { (await deleteDocFlow(ctx, d, { ask: false })) ? done++ : failed++; } catch (e) { console.warn(e); failed++; }
+    onProgress(done + failed, docs.length);
+  });
+  return { done, failed };
+}
+
 // ---------- Loads ----------
 
 // After a load is edited: papers and expenses show the new load name, and Drive copies move to the

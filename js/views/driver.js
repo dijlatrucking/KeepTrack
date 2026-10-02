@@ -157,7 +157,8 @@ function pay(ctx, root) {
         { label: "Miles", cell: (l) => String(l.miles), align: "right" },
         { label: "Pay", cell: (l) => money(l.pay), align: "right" },
       ], p.loads || []),
-      h("p", null, `Gross ${money(p.gross)} · Deductions ${money(p.deductions)}${p.deductionNote ? " (" + p.deductionNote + ")" : ""} · `, h("strong", null, "Net " + money(p.net))))) : [h("p", { class: "empty" }, "No paystubs yet.")]));
+      p.adjustment ? h("p", { class: "small" }, `Loads ${money(p.loadsPay)} · ${p.adjustment > 0 ? "Added" : "Taken off"} ${money(Math.abs(p.adjustment))}`) : null,
+      h("p", null, `Pay ${money(p.gross)} · Deductions ${money(p.deductions)}${p.deductionNote ? " (" + p.deductionNote + ")" : ""} · `, h("strong", null, "Net " + money(p.net))))) : [h("p", { class: "empty" }, "No paystubs yet.")]));
   }));
   root.append(card("Paystubs", null, body));
 }

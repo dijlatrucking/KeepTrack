@@ -1,11 +1,12 @@
 import { db, collection, doc, addDoc, setDoc, updateDoc, deleteDoc, getDocs, query, where, serverTimestamp, writeBatch } from "../fb.js";
 import { h, card, table, stat, money, num, field, input, select, btn, formToObj, guard, inviteCode, pill, ago, toast } from "../ui.js";
 import { watch, byNewest } from "../data.js";
-import { loadsTable, docsReviewQueue, requestsList, showInvite, staffScanCard, openDoc } from "../components.js";
+import { loadsTable, docsReviewQueue, requestsList, showInvite, staffScanCard, openDoc, moreButton } from "../components.js";
 import { pickerPage, summaryView, loadsView, expensesView, taxView, carrierSettingsCard } from "../ops.js";
 import { driveUrl, forgetDriveUrl, pingDrive, sendToDrive } from "../drive.js";
 import { storageCard, storageAlert } from "../storage.js";
 import { docActions } from "../editing.js";
+import { personLabel } from "../login.js";
 import { people as carrierPeople, paystubs as carrierPaystubs } from "./carrier.js";
 
 const allIds = (ctx) => ctx.carriers.map((c) => c.id);
@@ -63,7 +64,7 @@ function accessRequests(ctx, { hideWhenEmpty } = {}) {
             h("div", { class: "muted small" }, (isCarrier ? "Carrier" : "Dispatcher") + " · requested " + ago(u.createdAt))),
           pill("pending", "Pending")),
         h("div", { class: "request-grid" },
-          h("div", null, h("span", { class: "muted" }, "Email: "), u.email),
+          h("div", null, h("span", { class: "muted" }, u.username ? "Username: " : "Email: "), u.username || u.email),
           u.phone ? h("div", null, h("span", { class: "muted" }, "Phone: "), h("a", { href: "tel:" + u.phone }, u.phone)) : null,
           u.mc ? h("div", null, h("span", { class: "muted" }, "MC: "), u.mc) : null,
           u.dot ? h("div", null, h("span", { class: "muted" }, "DOT: "), u.dot) : null),
@@ -160,7 +161,7 @@ function teamView(ctx, root) {
       const boxes = ctx.carriers.map((c) => h("label", { class: "check" },
         h("input", { type: "checkbox", checked: d.set.has(c.id), onChange: (e) => { e.target.checked ? d.set.add(c.id) : d.set.delete(c.id); keep(); } }), c.name));
       return h("div", { class: "row col" },
-        h("div", { class: "row-top" }, h("div", null, h("div", { class: "strong" }, u.name || u.email), h("div", { class: "muted small" }, u.email))),
+        h("div", { class: "row-top" }, h("div", null, h("div", { class: "strong" }, personLabel(u)), h("div", { class: "muted small" }, u.username || u.email))),
         h("div", { class: "checks" }, h("label", { class: "check" }, allBox, h("strong", null, "All carriers")), boxes),
         h("div", null, btn("Save access", async () => {
           const ok = await guard(() => updateDoc(doc(db, "users", u.id), { allCarriers: d.all, assignedCarriers: [...d.set] }), "Access saved");
@@ -177,27 +178,66 @@ function teamView(ctx, root) {
 }
 
 function docsView(ctx, root) {
-  const all = h("div");
-  let docs = [], term = "";
-  const draw = () => {
-    const shown = docs.filter((d) => !term || [d.name, d.kind, d.category, d.tags, d.loadLabel, d.uploaderName, ctx.carrierName(d.carrierId)].filter(Boolean).join(" ").toLowerCase().includes(term))
-      .sort(byNewest).slice(0, 100);
-    all.replaceChildren(table([
-      { label: "Document", cell: (d) => h("span", null, h("span", { class: "strong" }, d.name), d.fileFreed && d.driveFileId ? h("span", { class: "pill pill-neutral tag" }, "In Drive only") : d.fileCleared ? h("span", { class: "pill pill-neutral tag" }, "Scan cleared") : null) },
-      { label: "Type", cell: (d) => d.kind || d.category || "—" },
-      { label: "Carrier", cell: (d) => ctx.carrierName(d.carrierId) },
-      { label: "From", cell: (d) => d.uploaderName || "—" },
-      { label: "Status", cell: (d) => pill(d.status) },
-      { label: "", cell: (d) => h("div", { class: "row-meta" }, btn("View", () => openDoc(d)), ...docActions(ctx, d),
-        d.driveUrl ? h("a", { href: d.driveUrl, target: "_blank", rel: "noopener", class: "btn btn-ghost" }, "In Drive")
+  const listBody = h("div");
+  const bar = h("div", { class: "select-bar" });
+  let docs = [], term = "", limit = 100, selecting = false, busy = false;
+  const picked = new Set();
+  const matches = (d) => !term || [d.name, d.kind, d.category, d.tags, d.loadLabel, d.uploaderName, ctx.carrierName(d.carrierId)].filter(Boolean).join(" ").toLowerCase().includes(term);
+  const drawBar = (shown) => {
+    if (!selecting) {
+      bar.replaceChildren(btn("Select", () => { selecting = true; draw(); }, "ghost", { class: "btn btn-ghost btn-sm" }));
+      return;
+    }
+    const n = picked.size;
+    const allOn = shown.length && shown.every((d) => picked.has(d.id));
+    bar.replaceChildren(
+      h("span", { class: "strong" }, `${n} selected`),
+      btn(allOn ? "Clear" : `Select all ${shown.length} shown`, () => { if (allOn) picked.clear(); else shown.forEach((d) => picked.add(d.id)); draw(); }, "ghost", { class: "btn btn-ghost btn-sm" }),
+      btn(n ? `Delete ${n}` : "Delete", async () => {
+        if (!n || busy) return;
+        const list = docs.filter((d) => picked.has(d.id));
+        if (!confirm(`Delete ${n} paper${n === 1 ? "" : "s"}?\n\nThey're removed from KeepTrack, and their copies in Google Drive go to the Drive trash.`)) return;
+        busy = true;
+        const del = bar.querySelector(".danger");
+        const { bulkDeleteDocs } = await import("../editing.js");
+        const r = await bulkDeleteDocs(ctx, list, (k, t) => { if (del) del.textContent = `Deleting… ${k}/${t}`; });
+        busy = false;
+        picked.clear(); selecting = false;
+        toast(`Deleted ${r.done} paper${r.done === 1 ? "" : "s"}${r.failed ? `. ${r.failed} couldn't be deleted` : ""}`, r.failed ? "bad" : "ok");
+        draw();
+      }, "ghost", { class: "btn btn-ghost btn-sm danger", disabled: !n }),
+      btn("Done", () => { selecting = false; picked.clear(); draw(); }, "ghost", { class: "btn btn-ghost btn-sm" }));
+  };
+  const row = (d) => {
+    const check = selecting ? h("input", { type: "checkbox", class: "pick", checked: picked.has(d.id), "aria-label": "Select " + (d.name || "paper"),
+      onChange: (e) => { e.target.checked ? picked.add(d.id) : picked.delete(d.id); drawBar(lastShown); } }) : null;
+    return h("div", { class: "row doc-row" + (selecting ? " picking" : ""), onClick: (e) => { if (selecting && e.target === e.currentTarget) { check.checked = !check.checked; check.dispatchEvent(new Event("change")); } } },
+      check,
+      h("div", { class: "grow" },
+        h("div", { class: "strong" }, d.name || d.kind || "Document",
+          d.fileFreed && d.driveFileId ? h("span", { class: "pill pill-neutral tag" }, "In Drive only") : d.fileCleared ? h("span", { class: "pill pill-neutral tag" }, "Scan cleared") : null),
+        h("div", { class: "muted small" }, [d.kind || d.category, ctx.carrierName(d.carrierId), d.uploaderName, d.loadLabel ? d.loadLabel.split(" ")[0] : null, ago(d.createdAt)].filter(Boolean).join(" · "))),
+      pill(d.status),
+      selecting ? null : h("div", { class: "row-meta" }, btn("View", () => openDoc(d), "ghost", { class: "btn btn-ghost btn-sm" }), ...docActions(ctx, d),
+        d.driveUrl ? h("a", { href: d.driveUrl, target: "_blank", rel: "noopener", class: "btn btn-ghost btn-sm" }, "In Drive")
           : d.fileFreed || d.fileCleared ? null
-          : btn("To Drive", async () => { const j = await sendToDrive(d.id, { quiet: true }); toast(j ? `Copied to Drive: ${j.folder}` : "Couldn't reach Google Drive. Check Settings.", j ? "ok" : "bad"); }, "ghost")) },
-    ], shown, term ? "No matches." : "No documents yet."));
+          : btn("To Drive", async () => { const j = await sendToDrive(d.id, { quiet: true }); toast(j ? `Copied to Drive: ${j.folder}` : "Couldn't reach Google Drive. Check Settings.", j ? "ok" : "bad"); }, "ghost", { class: "btn btn-ghost btn-sm" })));
+  };
+  let lastShown = [];
+  const draw = () => {
+    if (busy) return;
+    const all = docs.filter(matches).sort(byNewest);
+    for (const id of [...picked]) if (!docs.some((d) => d.id === id)) picked.delete(id); // deleted elsewhere
+    lastShown = all.slice(0, limit);
+    drawBar(lastShown);
+    listBody.replaceChildren(all.length
+      ? h("div", { class: "list" }, lastShown.map(row), moreButton(all.length, limit, () => { limit += 100; draw(); }))
+      : h("p", { class: "empty" }, term ? "No matches." : "No documents yet."));
   };
   const search = input("q", { type: "search", placeholder: "Search name, carrier, load, type…", "aria-label": "Search all documents" });
-  search.addEventListener("input", () => { term = search.value.trim().toLowerCase(); draw(); });
+  search.addEventListener("input", () => { term = search.value.trim().toLowerCase(); limit = 100; draw(); });
   ctx.sub(watch(collection(db, "documents"), (d) => { docs = d; draw(); }));
-  root.append(staffScanCard(ctx), docsReviewQueue(ctx, allIds(ctx)), card("All documents", null, search, all));
+  root.append(staffScanCard(ctx), docsReviewQueue(ctx, allIds(ctx)), card("All documents", bar, search, listBody));
 }
 
 
@@ -233,7 +273,7 @@ function accountsView(ctx, root) {
       h("div", { class: "form-grid" }, field("Role", r), field("Carrier", c)),
       h("p", { class: "muted small" }, "Dispatchers get their carriers under Team."),
       h("div", { class: "row-inline" }, btn("Save", null, "primary", { type: "submit" }), btn("Cancel", () => editSlot.replaceChildren(), "ghost")));
-    editSlot.replaceChildren(card(`Edit ${u.name || u.email}`, null, form));
+    editSlot.replaceChildren(card(`Edit ${personLabel(u)}`, null, form));
     sync();
     editSlot.scrollIntoView({ block: "start", behavior: "smooth" });
   };
@@ -243,17 +283,17 @@ function accountsView(ctx, root) {
     users.forEach((u) => (counts[u.role] = (counts[u.role] || 0) + 1));
     stats.replaceChildren(stat("Accounts", String(users.length)), stat("Carrier admins", String(counts.carrierAdmin || 0)), stat("Drivers", String(counts.driver || 0)), stat("Dispatchers", String(counts.dispatcher || 0)), stat("Pending", String(counts.pending || 0)));
     const shown = users.filter((u) => (roleF === "all" || u.role === roleF) && (carrierF === "all" || (carrierF === "none" ? !u.carrierId : u.carrierId === carrierF)) &&
-      (!q || [u.name, u.email, u.phone, u.company].filter(Boolean).join(" ").toLowerCase().includes(q)))
-      .sort((a, b) => (a.name || a.email || "").localeCompare(b.name || b.email || ""));
+      (!q || [u.name, u.username, u.email, u.phone, u.company].filter(Boolean).join(" ").toLowerCase().includes(q)))
+      .sort((a, b) => personLabel(a).localeCompare(personLabel(b)));
     body.replaceChildren(table([
-      { label: "Name", cell: (u) => h("div", null, h("div", { class: "strong" }, u.name || "—"), h("div", { class: "muted small" }, u.email || (u.manual ? "No app login (added by hand)" : ""))) },
+      { label: "Name", cell: (u) => h("div", null, h("div", { class: "strong" }, u.name || "—"), h("div", { class: "muted small" }, u.username ? "Username: " + u.username : u.email || (u.manual ? "No app login (added by hand)" : ""))) },
       { label: "Role", cell: (u) => pill(u.role === "pending" ? "pending" : "x", ROLE_LABEL[u.role] || u.role) },
       { label: "Carrier", cell: (u) => (u.carrierId ? ctx.carrierName(u.carrierId) : u.role === "dispatcher" ? (u.allCarriers ? "All carriers" : `${(u.assignedCarriers || []).length} assigned`) : u.company || "—") },
       { label: "Phone", cell: (u) => (u.phone ? h("a", { href: "tel:" + u.phone }, u.phone) : "—") },
       { label: "Joined", cell: (u) => ago(u.createdAt) },
       { label: "", cell: (u) => u.role === "pending" ? h("span", { class: "muted small" }, "See Access requests") : h("div", { class: "row-meta" },
         btn("Edit", () => edit(u), "ghost"),
-        u.id !== ctx.uid ? btn("Remove", () => confirm(`Remove ${u.name || u.email}? They lose access right away.`) && guard(() => deleteDoc(doc(db, "users", u.id)), "Access removed"), "ghost") : null) },
+        u.id !== ctx.uid ? btn("Remove", () => confirm(`Remove ${personLabel(u)}? They lose access right away.`) && guard(() => deleteDoc(doc(db, "users", u.id)), "Access removed"), "ghost") : null) },
     ], shown, "No accounts match."));
   };
   ctx.sub(watch(collection(db, "users"), (r) => { users = r; draw(); }));

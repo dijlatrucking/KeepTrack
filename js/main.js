@@ -1,7 +1,9 @@
 import {
   isConfigured, auth, db, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword,
-  signOut, sendPasswordResetEmail, doc, getDoc, setDoc, onSnapshot, writeBatch, serverTimestamp, collection
+  signOut, sendPasswordResetEmail, doc, getDoc, setDoc, onSnapshot, writeBatch, serverTimestamp, collection,
+  updatePassword, reauthenticateWithCredential, EmailAuthProvider
 } from "./fb.js";
+import { loginEmail, cleanUsername, USERNAME_RE, USERNAME_HELP, loginName } from "./login.js";
 import { h, field, input, btn, toast, friendlyError } from "./ui.js";
 import { loadCarriers } from "./data.js";
 import ownerViews from "./views/owner.js";
@@ -39,19 +41,30 @@ function renderAuth(mode = "signin") {
   pendingAuthError = "";
   const busy = (form, on) => form.querySelectorAll("button").forEach((b) => (b.disabled = on));
 
+  const userField = (attrs = {}) => input("username", { type: "text", autocomplete: "username", autocapitalize: "none", autocorrect: "off", spellcheck: "false", required: true, ...attrs });
+  // Sign-up: check the username before an account is made.
+  const pickUsername = (form) => {
+    const u = cleanUsername(form.username.value);
+    if (!USERNAME_RE.test(u)) throw new Error("That username won't work. " + USERNAME_HELP);
+    return u;
+  };
+
   const signin = h("form", { class: "stack", onSubmit: async (e) => {
     e.preventDefault();
     busy(signin, true); err.textContent = "";
-    try { await signInWithEmailAndPassword(auth, signin.email.value.trim(), signin.password.value); }
+    try { await signInWithEmailAndPassword(auth, loginEmail(signin.username.value), signin.password.value); }
     catch (x) { err.textContent = friendlyError(x); busy(signin, false); }
   } },
-    field("Email", input("email", { type: "email", autocomplete: "email", required: true })),
+    field("Username", userField(), "Older accounts can use their email here."),
     field("Password", input("password", { type: "password", autocomplete: "current-password", required: true })),
     btn("Sign in", null, "primary", { type: "submit" }),
     btn("Forgot password?", async () => {
-      const email = signin.email.value.trim();
-      if (!email) return (err.textContent = "Type your email first.");
-      try { await sendPasswordResetEmail(auth, email); toast("Reset email sent", "ok"); } catch (x) { err.textContent = friendlyError(x); }
+      const typed = signin.username.value.trim();
+      if (typed.includes("@")) {
+        try { await sendPasswordResetEmail(auth, typed); toast("Reset email sent", "ok"); } catch (x) { err.textContent = friendlyError(x); }
+        return;
+      }
+      err.textContent = "Ask whoever set you up (your carrier or dispatch) to help you get back in.";
     }, "link"));
 
   const signup = h("form", { class: "stack", onSubmit: async (e) => {
@@ -61,14 +74,15 @@ function renderAuth(mode = "signin") {
     let cred = null;
     signingUp = true;
     try {
-      cred = await createUserWithEmailAndPassword(auth, signup.email.value.trim(), signup.password.value);
+      const username = pickUsername(signup);
+      cred = await createUserWithEmailAndPassword(auth, loginEmail(username), signup.password.value);
       const invRef = doc(db, "invites", code);
       const inv = await getDoc(invRef);
       if (!inv.exists() || inv.data().used) throw new Error("That invite code isn't valid or was already used.");
       const i = inv.data();
       const batch = writeBatch(db);
       batch.set(doc(db, "users", cred.user.uid), {
-        name: signup.name.value.trim(), email: signup.email.value.trim(), phone: signup.phone.value.trim(),
+        name: signup.name.value.trim(), username, phone: signup.phone.value.trim(),
         role: i.role, carrierId: i.carrierId ?? null, invite: code, createdAt: serverTimestamp(),
       });
       batch.update(invRef, { used: true, usedBy: cred.user.uid, usedAt: serverTimestamp() });
@@ -84,8 +98,8 @@ function renderAuth(mode = "signin") {
     field("Invite code", input("code", { required: true, autocomplete: "off", placeholder: "From your dispatcher or carrier", style: "text-transform:uppercase" })),
     field("Full name", input("name", { required: true, autocomplete: "name" })),
     field("Phone", input("phone", { type: "tel", autocomplete: "tel" })),
-    field("Email", input("email", { type: "email", autocomplete: "email", required: true })),
-    field("Password", input("password", { type: "password", autocomplete: "new-password", minlength: "6", required: true })),
+    field("Pick a username", userField({ placeholder: "e.g. drew.smith" }), USERNAME_HELP),
+    field("Password", input("password", { type: "password", autocomplete: "new-password", minlength: "6", required: true }), "At least 6 characters."),
     btn("Create account", null, "primary", { type: "submit" }),
     h("p", { class: "muted small" }, "No code? ", btn("Request access instead", () => renderAuth("request"), "link")));
 
@@ -110,9 +124,10 @@ function renderAuth(mode = "signin") {
     let cred = null;
     signingUp = true;
     try {
-      cred = await createUserWithEmailAndPassword(auth, request.email.value.trim(), request.password.value);
+      const username = pickUsername(request);
+      cred = await createUserWithEmailAndPassword(auth, loginEmail(username), request.password.value);
       await setDoc(doc(db, "users", cred.user.uid), {
-        name: request.name.value.trim(), email: request.email.value.trim(), phone: request.phone.value.trim(),
+        name: request.name.value.trim(), username, phone: request.phone.value.trim(),
         role: "pending", requestedRole: roleSel.value,
         company: carrier ? request.company.value.trim() : "", mc: carrier ? request.mc.value.trim() : "", dot: carrier ? request.dot.value.trim() : "",
         note: request.note.value.trim(), createdAt: serverTimestamp(),
@@ -129,8 +144,8 @@ function renderAuth(mode = "signin") {
     companyBox,
     field("Full name", input("name", { required: true, autocomplete: "name" })),
     field("Phone", input("phone", { type: "tel", autocomplete: "tel", required: true })),
-    field("Email", input("email", { type: "email", autocomplete: "email", required: true })),
-    field("Password", input("password", { type: "password", autocomplete: "new-password", minlength: "6", required: true })),
+    field("Pick a username", userField({ placeholder: "e.g. acme.trucking" }), USERNAME_HELP),
+    field("Password", input("password", { type: "password", autocomplete: "new-password", minlength: "6", required: true }), "At least 6 characters."),
     field("Anything we should know? (optional)", h("textarea", { name: "note", class: "input", rows: "2", placeholder: "Number of trucks, lanes you run, how you heard about us…" })),
     btn("Request access", null, "primary", { type: "submit" }),
     h("p", { class: "muted small" }, "Drivers: ask your carrier for an invite code instead."));
@@ -173,8 +188,41 @@ function renderNoProfile(user) {
   clearView();
   root.replaceChildren(publicPage(h("div", { class: "auth-card" },
     h("h1", null, "Setting up your account…"),
-    h("p", { class: "muted" }, `Signed in as ${user.email}. If this screen doesn't change, your account doesn't have access yet. Ask for a new invite code.`),
+    h("p", { class: "muted" }, `Signed in as ${loginName(user)}. If this screen doesn't change, your account doesn't have access yet. Ask for a new invite code.`),
     btn("Sign out", () => signOut(auth)))));
+}
+
+// Anyone signed in can change their own password (they type the current one first).
+function changePassword(user) {
+  const err = h("p", { class: "form-error", role: "alert" });
+  const dlg = h("dialog", { class: "dialog", "aria-label": "Change password" });
+  const close = () => { dlg.close(); dlg.remove(); };
+  const form = h("form", { class: "stack", onSubmit: async (e) => {
+    e.preventDefault();
+    err.textContent = "";
+    if (form.next.value !== form.again.value) { err.textContent = "The new passwords don't match."; return; }
+    form.querySelectorAll("button").forEach((b) => (b.disabled = true));
+    try {
+      await reauthenticateWithCredential(user, EmailAuthProvider.credential(user.email, form.current.value));
+      await updatePassword(user, form.next.value);
+      toast("Password changed", "ok");
+      close();
+    } catch (x) {
+      err.textContent = x && x.code === "auth/invalid-credential" ? "Your current password isn't right." : friendlyError(x);
+      form.querySelectorAll("button").forEach((b) => (b.disabled = false));
+    }
+  } },
+    h("h2", null, "Change password"),
+    h("p", { class: "muted small" }, "Signed in as " + loginName(user)),
+    field("Current password", input("current", { type: "password", autocomplete: "current-password", required: true })),
+    field("New password", input("next", { type: "password", autocomplete: "new-password", minlength: "6", required: true }), "At least 6 characters."),
+    field("New password again", input("again", { type: "password", autocomplete: "new-password", minlength: "6", required: true })),
+    err,
+    h("div", { class: "row-inline" }, btn("Save", null, "primary", { type: "submit" }), btn("Cancel", close, "ghost")));
+  dlg.append(form);
+  dlg.addEventListener("cancel", (e) => { e.preventDefault(); close(); });
+  document.body.append(dlg);
+  dlg.showModal();
 }
 
 // ---------- App shell ----------
@@ -256,7 +304,7 @@ async function renderShell(user, profile) {
       menuBtn,
       nav,
       h("div", { class: "who" },
-        h("span", { class: "who-name" }, profile.name || user.email),
+        h("span", { class: "who-name" }, profile.name || loginName(user, profile)),
         h("span", { class: "who-role" }, role.label),
         btn("Sign out", () => signOut(auth), "link"))));
   menuBtn.addEventListener("click", () => {
@@ -273,7 +321,8 @@ async function renderShell(user, profile) {
       h("footer", { class: "site-footer" },
         h("div", { class: "site-footer-inner" },
           h("span", null, `© ${new Date().getFullYear()} KeepTrack · A Spartan Groups LLC service`),
-          h("span", null, `Signed in as ${user.email}`)))));
+          h("span", null, `Signed in as ${loginName(user, profile)} · `,
+            h("button", { type: "button", class: "btn-link footer-link", onClick: () => changePassword(user) }, "Change password"))))));
   show();
 }
 

@@ -232,7 +232,7 @@ const tinyPdf = Buffer.from("%PDF-1.1\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endob
 let owner, carrier, dispatcher, driver, driverCode;
 await run("Owner signs in and lands on Overview", async () => {
   owner = await open("owner");
-  await owner.getByLabel("Email").fill("owner@test.dev");
+  await owner.getByLabel("Username").fill("owner@test.dev"); // older email accounts still sign in
   await owner.getByLabel("Password").fill("owner-pass-1");
   await owner.getByRole("button", { name: "Sign in" }).click();
   await heading(owner, "Overview");
@@ -247,7 +247,7 @@ await run("Carrier requests access and sees the waiting screen", async () => {
   await carrier.getByLabel("DOT #").fill("7654321");
   await carrier.getByLabel("Full name").fill("Carla Carrier");
   await carrier.getByLabel("Phone").fill("2085550100");
-  await carrier.getByLabel("Email").fill("carrier@test.dev");
+  await carrier.getByLabel("Pick a username").fill("carla.carrier");
   await carrier.getByLabel("Password").fill("carrier-pass-1");
   await carrier.getByRole("button", { name: "Request access" }).click();
   await heading(carrier, "Request received");
@@ -273,7 +273,7 @@ await run("Dispatcher requests access", async () => {
   await dispatcher.getByLabel("I'm signing up as").selectOption("dispatcher");
   await dispatcher.getByLabel("Full name").fill("Dana Dispatch");
   await dispatcher.getByLabel("Phone").fill("2085550101");
-  await dispatcher.getByLabel("Email").fill("dispatch@test.dev");
+  await dispatcher.getByLabel("Pick a username").fill("dana.dispatch");
   await dispatcher.getByLabel("Password").fill("dispatch-pass-1");
   await dispatcher.getByRole("button", { name: "Request access" }).click();
   await heading(dispatcher, "Request received");
@@ -318,7 +318,7 @@ await run("A bad invite code is rejected and nobody gets in", async () => {
   await p.getByRole("tab", { name: "Invite code" }).click();
   await p.getByLabel("Invite code").fill("NOPE000000");
   await p.getByLabel("Full name").fill("Intruder");
-  await p.getByLabel("Email").fill("intruder@test.dev");
+  await p.getByLabel("Pick a username").fill("intruder");
   await p.getByLabel("Password").fill("intruder-1");
   await p.getByRole("button", { name: "Create account" }).click();
   await p.locator(".form-error", { hasText: /invite code|access/i }).waitFor();
@@ -332,7 +332,7 @@ await run("Driver signs up on a phone with the invite code", async () => {
   await driver.getByLabel("Invite code").fill(driverCode.toLowerCase());
   await driver.getByLabel("Full name").fill("Drew Driver");
   await driver.getByLabel("Phone").fill("2085550102");
-  await driver.getByLabel("Email").fill("driver@test.dev");
+  await driver.getByLabel("Pick a username").fill("Drew"); // usernames aren't case-sensitive
   await driver.getByLabel("Password").fill("driver-pass-1");
   await driver.getByRole("button", { name: "Create account" }).click();
   await heading(driver, "Loads");
@@ -344,12 +344,54 @@ await run("The same invite code can't be used twice", async () => {
   await p.getByRole("tab", { name: "Invite code" }).click();
   await p.getByLabel("Invite code").fill(driverCode);
   await p.getByLabel("Full name").fill("Second Person");
-  await p.getByLabel("Email").fill("second@test.dev");
+  await p.getByLabel("Pick a username").fill("second.person");
   await p.getByLabel("Password").fill("second-1");
   await p.getByRole("button", { name: "Create account" }).click();
   await p.locator(".form-error", { hasText: /invite code|access/i }).waitFor();
   await p.context().close();
   delete pages.reuser;
+});
+
+await run("A taken username is refused with a clear message, and no account is left behind", async () => {
+  const p = await open("copycat", { width: 390, height: 844 });
+  await p.getByRole("tab", { name: "Request access" }).click();
+  await p.getByLabel("I'm signing up as").selectOption("dispatcher");
+  await p.getByLabel("Full name").fill("Copy Cat");
+  await p.getByLabel("Phone").fill("2085550111");
+  await p.getByLabel("Pick a username").fill("Carla.Carrier");
+  await p.getByLabel("Password").fill("copycat-1");
+  await p.getByRole("button", { name: "Request access" }).click();
+  await p.locator(".form-error", { hasText: "That username is already taken" }).waitFor();
+  await p.getByLabel("Pick a username").fill("carla carrier");
+  await p.getByLabel("Password").fill("copycat-1");
+  await p.getByRole("button", { name: "Request access" }).click();
+  await p.locator(".form-error", { hasText: "That username won't work" }).waitFor();
+  await p.context().close();
+  delete pages.copycat;
+});
+
+await run("Driver changes their password, signs out, and signs back in with username + new password", async () => {
+  await driver.getByRole("button", { name: "Change password" }).click();
+  const dlg = driver.locator("dialog[open]");
+  await dlg.locator('input[name="current"]').fill("wrong-one");
+  await dlg.locator('input[name="next"]').fill("driver-pass-2");
+  await dlg.locator('input[name="again"]').fill("driver-pass-2");
+  await dlg.getByRole("button", { name: "Save" }).click();
+  await dlg.getByText("Your current password isn't right.").waitFor();
+  await dlg.locator('input[name="current"]').fill("driver-pass-1");
+  await dlg.getByRole("button", { name: "Save" }).click();
+  await toast(driver, "Password changed");
+  const menu = driver.locator(".menu-btn");
+  if (await menu.isVisible()) await menu.click();
+  await driver.getByRole("button", { name: "Sign out" }).click();
+  await driver.getByLabel("Username").fill("drew");
+  await driver.getByLabel("Password").fill("driver-pass-1");
+  await driver.getByRole("button", { name: "Sign in" }).click();
+  await driver.locator(".form-error", { hasText: "Wrong username or password" }).waitFor();
+  await driver.getByLabel("Password").fill("driver-pass-2");
+  await driver.getByRole("button", { name: "Sign in" }).click();
+  await heading(driver, "Loads");
+  await driver.getByText("Signed in as drew").waitFor();
 });
 
 await run("Carrier sets the driver's pay to $0.60/mile on Unit 7", async () => {
@@ -575,7 +617,7 @@ await run("Owner scans a W-9 from the Documents tab and can open it", async () =
   await owner.locator('input[data-role="camera"]').first().setInputFiles({ name: "w9.png", mimeType: "image/png", buffer: noisyPng(1000, 1300) });
   await owner.getByRole("button", { name: "Save document" }).click();
   await toast(owner, "Saved");
-  const row = owner.locator("tr", { hasText: "W-9 Test Carrier A" }).first();
+  const row = owner.locator(".doc-row", { hasText: "W-9 Test Carrier A" }).first();
   const [popup] = await Promise.all([owner.waitForEvent("popup"), row.getByRole("button", { name: "View" }).click()]);
   await popup.waitForURL(/^blob:/, { timeout: 10000 });
   await popup.close();
@@ -602,13 +644,41 @@ await run("Driver taps Delivered", async () => {
 await run("Carrier issues a paystub: 500 mi × $0.60 = $300", async () => {
   await nav(carrier, "Paystubs");
   await carrier.locator("select[name=driver] option", { hasText: "Drew Driver" }).waitFor({ state: "attached" });
-  await carrier.getByLabel("Driver").selectOption({ label: "Drew Driver" });
+  await carrier.locator("select[name=driver]").selectOption({ label: "Drew Driver" });
   await carrier.getByLabel("From").fill(iso(-7));
   await carrier.getByLabel("To").fill(iso(7));
   await carrier.getByLabel("To").dispatchEvent("change");
-  await carrier.getByText("Gross pay: $300.00").waitFor();
+  await carrier.getByText("From loads: $300.00").waitFor();
+  const pay = carrier.getByLabel("Driver pay ($)");
+  if ((await pay.inputValue()) !== "300.00") throw new Error("Driver pay didn't fill in from the loads: " + (await pay.inputValue()));
+  await carrier.getByText("Net $300.00").waitFor();
   await carrier.getByRole("button", { name: "Issue paystub" }).click();
   await toast(carrier, "Paystub issued");
+});
+
+await run("Carrier pays a different amount than the loads add up to (bonus + deduction)", async () => {
+  await carrier.locator("select[name=driver]").selectOption({ label: "Drew Driver" });
+  await carrier.getByLabel("From").fill(iso(-7));
+  await carrier.getByLabel("To").fill(iso(7));
+  await carrier.getByLabel("To").dispatchEvent("change");
+  await carrier.getByText("From loads: $300.00").waitFor();
+  await carrier.getByLabel("Driver pay ($)").fill("350");
+  await carrier.getByLabel("Deductions ($)").fill("25");
+  await carrier.getByText("Net $325.00").waitFor();
+  await carrier.getByText("Changed from $300.00").waitFor();
+  await carrier.getByLabel("Deduction note").fill("Advance");
+  await carrier.getByRole("button", { name: "Issue paystub" }).click();
+  await toast(carrier, "Paystub issued");
+  await carrier.locator(".card", { hasText: "Issued paystubs" }).locator(".row", { hasText: "$325.00" }).first().waitFor();
+  await nav(driver, "Pay");
+  const stub = driver.locator("details.stub", { hasText: "$325.00" }).first();
+  await stub.click();
+  await stub.getByText("Added $50.00").waitFor();
+  // take it back out so the rest of the run sees one paystub
+  carrier.once("dialog", (d) => d.accept());
+  await carrier.locator(".card", { hasText: "Issued paystubs" }).locator(".row", { hasText: "$325.00" }).first().getByRole("button", { name: "Delete" }).click();
+  await toast(carrier, "Paystub deleted");
+  await driver.locator("details.stub", { hasText: "$325.00" }).waitFor({ state: "detached" });
 });
 
 await run("Driver sees the $300 paystub", async () => {
@@ -774,7 +844,7 @@ await run("Owner denies a sign-up and that person stays locked out", async () =>
   await p.getByLabel("Company name").fill("Sketchy Freight");
   await p.getByLabel("Full name").fill("Sam Sketchy");
   await p.getByLabel("Phone").fill("2085550199");
-  await p.getByLabel("Email").fill("sketchy@test.dev");
+  await p.getByLabel("Pick a username").fill("sketchy");
   await p.getByLabel("Password").fill("sketchy-1");
   await p.getByRole("button", { name: "Request access" }).click();
   await heading(p, "Request received");
@@ -876,7 +946,7 @@ await run("Owner frees up space: scans leave KeepTrack, records stay, and View s
   if (!driveCalls.some((c) => c.fetch && c.ok)) throw new Error("The scan didn't come back from Drive");
   // records still work: the owner's list marks them, search still finds them
   await nav(owner, "Documents");
-  await owner.locator("tr", { hasText: "W-9 Test Carrier A" }).first().getByText("In Drive only").waitFor();
+  await owner.locator(".doc-row", { hasText: "W-9 Test Carrier A" }).first().getByText("In Drive only").waitFor();
 });
 
 await run("Rinse and repeat: a new scan after freeing is counted, backed up and freed again", async () => {
@@ -910,14 +980,14 @@ await run("Owner edits a paper that only lives in Drive now: the record changes 
   if (!w9 || !w9.fileFreed) throw new Error("Expected the W-9 to be moved to Drive already");
   await nav(owner, "Documents");
   const calls = driveCalls.length;
-  await owner.locator("tr", { hasText: "W-9 Test Carrier A" }).first().getByRole("button", { name: "Edit" }).click();
+  await owner.locator(".doc-row", { hasText: "W-9 Test Carrier A" }).first().getByRole("button", { name: "Edit" }).click();
   const dlg = owner.locator("dialog[open]");
   await dlg.getByLabel("Name").fill("W-9 2026 Test Carrier A");
   await dlg.getByRole("button", { name: "Save", exact: true }).click();
   await toast(owner, "Paper saved");
   await waitFor(async () => (await adminDocs("documents")).find((d) => d.id === w9.id)?.name === "W-9 2026 Test Carrier A", "Name didn't change");
   await waitFor(() => driveCalls.slice(calls).some((c) => c.docId === w9.id && c.ok), "Drive copy wasn't re-filed");
-  await owner.locator("tr", { hasText: "W-9 2026 Test Carrier A" }).first().getByText("In Drive only").waitFor();
+  await owner.locator(".doc-row", { hasText: "W-9 2026 Test Carrier A" }).first().getByText("In Drive only").waitFor();
 });
 
 await run("Carrier fixes a lumper's amount and the expense made from it follows", async () => {
@@ -1012,6 +1082,48 @@ await run("Carrier deletes a load they booked, keeping its papers; they can't de
   const kept = (await adminDocs("documents")).find((d) => d.id === paper.id);
   if (!kept || kept.loadId) throw new Error("Paper should be kept and unlinked");
   await nav(carrier, "Summary");
+});
+
+await run("Pop-ups never cover the page: at most two at once, repeats roll into one", async () => {
+  await owner.evaluate(async () => {
+    const { toast } = await import("./js/ui.js");
+    for (let i = 0; i < 12; i++) toast("Paper deleted", "ok");
+    for (let i = 0; i < 5; i++) toast((n) => `Copied ${n} file${n === 1 ? "" : "s"} to Google Drive`, "ok", { key: "drive-ok", add: 2 });
+    toast("Saved", "ok");
+  });
+  const n = await owner.locator("#toasts .toast").count();
+  if (n > 2) throw new Error(`${n} pop-ups on screen`);
+  await owner.locator("#toasts .toast", { hasText: "Copied 10 files to Google Drive" }).waitFor();
+  await owner.locator("#toasts .toast", { hasText: "Saved" }).click(); // tap to dismiss
+  await owner.locator("#toasts .toast", { hasText: "Saved" }).waitFor({ state: "detached" });
+});
+
+await run("Owner selects several papers and deletes them in one go", async () => {
+  const ids = [];
+  await seed(async (db) => {
+    const cid = (await getDocs(collection(db, "carriers"))).docs.find((d) => d.data().name === "Test Carrier A").id;
+    for (let i = 0; i < 6; i++) {
+      const id = "bulkPick" + i; ids.push(id);
+      await setDoc(doc(db, "documents", id), { carrierId: cid, kind: "Other", name: `Bulk test paper ${i}`, status: "approved", uploadedBy: ownerUid, uploaderName: "Test Owner", uploaderRole: "owner", createdAt: new Date() });
+      await setDoc(doc(db, "docFiles", id), { carrierId: cid, uploadedBy: ownerUid, data: "data:image/jpeg;base64,AAAA" });
+    }
+  });
+  await nav(owner, "Documents");
+  const card = owner.locator(".card", { hasText: "All documents" });
+  await owner.getByLabel("Search all documents").fill("Bulk test paper");
+  await card.locator(".doc-row").nth(5).waitFor();
+  await card.getByRole("button", { name: "Select", exact: true }).click();
+  await card.getByRole("button", { name: "Select all 6 shown" }).click();
+  await card.locator(".doc-row", { hasText: "Bulk test paper 5" }).getByRole("checkbox").uncheck();
+  await card.getByText("5 selected").waitFor();
+  owner.once("dialog", (d) => d.accept());
+  await card.getByRole("button", { name: "Delete 5" }).click();
+  await toast(owner, "Deleted 5 papers");
+  const left = (await adminDocs("documents")).filter((d) => ids.includes(d.id));
+  if (left.length !== 1 || left[0].id !== "bulkPick5") throw new Error("Wrong papers deleted: " + left.map((d) => d.id).join(","));
+  if ((await adminDocs("docFiles")).filter((f) => ids.includes(f.id)).length !== 1) throw new Error("Scans left behind");
+  if ((await owner.locator("#toasts .toast").count()) > 2) throw new Error("Pop-ups piled up during the bulk delete");
+  await owner.getByLabel("Search all documents").fill("");
 });
 
 // ---------- 8. Phone layout ----------
@@ -1121,7 +1233,7 @@ await run("Owner Summary across 41 carriers at volume", async () => {
 await run("An all-carriers dispatcher loads Tasks across 41 carriers", async () => {
   await seed(async (db) => {
     const { getDocs, query, collection: col, where: w } = await import("firebase/firestore");
-    const snap = await getDocs(query(col(db, "users"), w("email", "==", "dispatch@test.dev")));
+    const snap = await getDocs(query(col(db, "users"), w("username", "==", "dana.dispatch")));
     await setDoc(snap.docs[0].ref, { allCarriers: true }, { merge: true });
   });
   const t0 = Date.now();
@@ -1205,7 +1317,7 @@ await run("Stress: owner and carrier edit the same paper at the same moment; one
   await owner.getByLabel("Search all documents").fill("Stress company paper 01");
   await nav(carrier, "Documents");
   await carrier.getByLabel("Search documents").fill("Stress company paper 01");
-  await owner.locator("tr", { hasText: "Stress company paper 01" }).first().getByRole("button", { name: "Edit" }).click();
+  await owner.locator(".doc-row", { hasText: "Stress company paper 01" }).first().getByRole("button", { name: "Edit" }).click();
   await carrier.locator(".card", { hasText: "Document vault" }).locator(".row", { hasText: "Stress company paper 01" }).first().getByRole("button", { name: "Edit" }).click();
   await owner.locator("dialog[open]").getByLabel("Note").fill("owner's note");
   await carrier.locator("dialog[open]").getByLabel("Note").fill("carrier's note");

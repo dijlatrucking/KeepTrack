@@ -116,6 +116,14 @@ await deny("request access sneaking in a carrierId", () => setDoc(doc(as("new3")
 await deny("request access sneaking in allCarriers", () => setDoc(doc(as("new4"), "users/new4"), { name: "x", email: "x", role: "pending", requestedRole: "dispatcher", allCarriers: true }));
 await allow("request access as a carrier", () => setDoc(doc(as("new5"), "users/new5"), { name: "x", email: "x", phone: "1", role: "pending", requestedRole: "carrierAdmin", company: "C", mc: "1", dot: "2", note: "", createdAt: new Date() }));
 await deny("create a profile for someone else's uid", () => setDoc(doc(as("new6"), "users/other"), { name: "x", role: "pending", requestedRole: "dispatcher" }));
+// usernames: the username on the profile must be the one they actually sign in with
+const asLogin = (uid, email) => env.authenticatedContext(uid, { email }).firestore();
+const UD = "@keeptrack-6426e.firebaseapp.com";
+await allow("request access with a username", () => setDoc(doc(asLogin("u1", "acme.trucking" + UD), "users/u1"), { name: "Acme", username: "acme.trucking", phone: "1", role: "pending", requestedRole: "carrierAdmin", company: "Acme", mc: "", dot: "", note: "", createdAt: new Date() }));
+await deny("request access claiming someone else's username", () => setDoc(doc(asLogin("u2", "sneaky" + UD), "users/u2"), { name: "x", username: "acme.trucking", phone: "1", role: "pending", requestedRole: "dispatcher", createdAt: new Date() }));
+await deny("an email account claiming a username", () => setDoc(doc(asLogin("u3", "real@gmail.com"), "users/u3"), { name: "x", username: "boss", phone: "1", role: "pending", requestedRole: "dispatcher", createdAt: new Date() }));
+await deny("a username that isn't text", () => setDoc(doc(asLogin("u4", "x" + UD), "users/u4"), { name: "x", username: 5, phone: "1", role: "pending", requestedRole: "dispatcher", createdAt: new Date() }));
+await deny("user renames their own username afterwards", () => updateDoc(doc(asLogin("u1", "acme.trucking" + UD), "users/u1"), { username: "owner" }));
 {
   const db = as("new7");
   const b = writeBatch(db);

@@ -130,12 +130,13 @@ export async function uploadDoc(ctx, file, meta) {
   const hash = await fingerprint(data);
   const dupe = await alreadyOnFile(ctx, meta.carrierId, hash);
   if (dupe) {
-    toast(`Already on file: “${dupe.name}”${dupe.uploaderName ? " from " + dupe.uploaderName : ""}. Not saved twice.`, "info");
+    const one = `Already on file: “${dupe.name}”${dupe.uploaderName ? " from " + dupe.uploaderName : ""}. Not saved twice.`;
+    if (!meta._quiet) toast((n) => (n === 1 ? one : `${n} were already on file. Not saved twice.`), "info", { key: "dupe" });
     return { id: dupe.id, duplicate: true };
   }
   const docRef = doc(collection(db, "documents"));
   const batch = writeBatch(db);
-  const clean = Object.fromEntries(Object.entries(meta).filter(([, v]) => v !== undefined));
+  const clean = Object.fromEntries(Object.entries(meta).filter(([k, v]) => v !== undefined && k !== "_quiet"));
   batch.set(docRef, {
     ...clean,
     name: meta.name || file.name,
@@ -186,10 +187,16 @@ export function scanPicker(label = "Scan or upload") {
 // Save each picked page as its own document. Multi-page scans get "p1/2" style names.
 export async function saveScans(ctx, files, meta) {
   const ids = [];
+  let dupes = 0;
+  const many = files.length > 1;
   for (let i = 0; i < files.length; i++) {
-    const name = (meta.name || `${meta.kind || "Doc"}${meta.loadLabel ? " · " + meta.loadLabel.split(" ")[0] : ""}`) + (files.length > 1 ? ` p${i + 1}/${files.length}` : "");
-    ids.push((await uploadDoc(ctx, files[i], { ...meta, name })).id);
+    const name = (meta.name || `${meta.kind || "Doc"}${meta.loadLabel ? " · " + meta.loadLabel.split(" ")[0] : ""}`) + (many ? ` p${i + 1}/${files.length}` : "");
+    const r = await uploadDoc(ctx, files[i], { ...meta, name, ...(many ? { _quiet: true } : {}) });
+    if (r.duplicate) dupes++;
+    ids.push(r.id);
   }
+  // several pages: one summary instead of a pop-up per page
+  if (many && dupes) toast(`${files.length - dupes} of ${files.length} pages saved. ${dupes} ${dupes === 1 ? "was" : "were"} already on file.`, "info");
   return ids;
 }
 

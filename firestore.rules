@@ -28,6 +28,13 @@ service cloud.firestore {
     function onlyChanges(keys) { return request.resource.data.diff(resource.data).affectedKeys().hasOnly(keys); }
     function keepsCarrier() { return request.resource.data.carrierId == resource.data.carrierId; }
 
+    // A username on a profile must be the one the person actually signs in with
+    // (usernames sign in as "<username>@keeptrack-6426e.firebaseapp.com").
+    function loginMatches(d) {
+      return !('username' in d)
+        || (d.username is string && request.auth.token.email == d.username + '@keeptrack-6426e.firebaseapp.com');
+    }
+
     // Sign-up must redeem an unused invite in the same batch, and copy its role + carrier exactly.
     function redeemsInvite(d) {
       let before = get(invitePath(d.invite)).data;
@@ -43,12 +50,14 @@ service cloud.firestore {
         || manages(resource.data.get('carrierId', '')));
       allow create: if (signedIn() && request.auth.uid == uid && (
            // Invite code: role and carrier come from the invite.
-           (request.resource.data.keys().hasOnly(['name', 'email', 'phone', 'role', 'carrierId', 'invite', 'createdAt'])
+           (request.resource.data.keys().hasOnly(['name', 'email', 'username', 'phone', 'role', 'carrierId', 'invite', 'createdAt'])
+            && loginMatches(request.resource.data)
             && redeemsInvite(request.resource.data))
            // No code: request access and wait as "pending" until the owner approves.
         || (request.resource.data.role == 'pending'
             && request.resource.data.requestedRole in ['carrierAdmin', 'dispatcher']
-            && request.resource.data.keys().hasOnly(['name', 'email', 'phone', 'role', 'requestedRole', 'company', 'mc', 'dot', 'note', 'createdAt']))))
+            && loginMatches(request.resource.data)
+            && request.resource.data.keys().hasOnly(['name', 'email', 'username', 'phone', 'role', 'requestedRole', 'company', 'mc', 'dot', 'note', 'createdAt']))))
         // A driver added by hand (no app login). The id can never match a real sign-in.
         || (uid.matches('^manual_[a-z0-9]{8,40}$')
             && request.resource.data.role == 'driver' && request.resource.data.manual == true

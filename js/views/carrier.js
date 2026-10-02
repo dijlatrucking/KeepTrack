@@ -3,6 +3,7 @@ import { h, card, table, stat, money, num, field, input, select, btn, formToObj,
 import { watch, byNewest, driverPayFor } from "../data.js";
 import { lane, shortId, openDoc, scanPicker, saveScans, docsReviewQueue, showInvite } from "../components.js";
 import { docActions } from "../editing.js";
+import { personLabel } from "../login.js";
 import { summaryView, loadsView, expensesView, taxView, carrierSettingsCard } from "../ops.js";
 
 // The carrier these pages work on: the carrier admin's own company, or the one the owner picked.
@@ -50,11 +51,11 @@ function people(ctx, root) {
       h("div", { class: "row-inline" }, btn("Save", null, "dark", { type: "submit" }), btn("Cancel", () => { openEdits.delete(d.id); edit.hidden = true; }, "ghost")));
     return h("div", { class: "row col" },
       h("div", { class: "row-top" },
-        h("div", null, h("div", { class: "strong" }, d.name || d.email, d.manual ? h("span", { class: "pill pill-neutral tag" }, "No app login") : null), h("div", { class: "muted small" }, [d.truckUnit, payText(d), d.phone].filter(Boolean).join(" · "))),
+        h("div", null, h("div", { class: "strong" }, personLabel(d), d.manual ? h("span", { class: "pill pill-neutral tag" }, "No app login") : null), h("div", { class: "muted small" }, [d.truckUnit, payText(d), d.phone].filter(Boolean).join(" · "))),
         h("div", { class: "row-meta" },
           btn("Edit", () => { edit.hidden = !edit.hidden; edit.hidden ? openEdits.delete(d.id) : openEdits.add(d.id); }),
           btn("Remove", async () => {
-            if (!confirm(d.manual ? `Remove ${d.name}?` : `Remove ${d.name || d.email}? They lose access to the company right away.`)) return;
+            if (!confirm(d.manual ? `Remove ${d.name}?` : `Remove ${personLabel(d)}? They lose access to the company right away.`)) return;
             await guard(() => deleteDoc(doc(db, "users", d.id)), "Driver removed");
           }, "ghost"))),
       edit);
@@ -204,52 +205,85 @@ function paystubs(ctx, root) {
   const preview = h("div");
   const from = input("from", { type: "date", required: true });
   const to = input("to", { type: "date", required: true });
+  // Driver pay fills in from the delivered loads × the driver's pay setup; type over it to pay a different amount.
+  const payIn = input("pay", { type: "number", step: "0.01", min: "0", inputmode: "decimal", placeholder: "0.00", required: true });
+  const dedIn = input("deductions", { type: "number", step: "0.01", min: "0", inputmode: "decimal", placeholder: "0.00" });
+  const payHint = h("span", { class: "field-hint" }, "Fills in from the driver's delivered loads. Type a different amount to override.");
+  const netLine = h("p", { class: "paystub-net" });
+  let calc = null, typed = false;
+  const showNet = () => {
+    const pay = num(payIn.value), ded = num(dedIn.value);
+    netLine.replaceChildren(payIn.value === "" ? "" : h("span", null, `Pay ${money(pay)}`, ded ? ` − deductions ${money(ded)}` : "", " = ", h("b", null, `Net ${money(Math.round((pay - ded) * 100) / 100)}`)));
+  };
   const compute = () => {
     const d = state.drivers.find((x) => x.id === driverSel.value);
-    if (!d || !from.value || !to.value) { preview.replaceChildren(); return null; }
+    if (!d || !from.value || !to.value) { preview.replaceChildren(); calc = null; return null; }
     const a = toDate(from.value).getTime() - 43200000, b = toDate(to.value).getTime() + 43200000;
     const loads = state.loads.filter((l) => l.driverId === d.id && ["delivered", "paid"].includes(l.status) && (() => { const t = toDate(l.deliverBy || l.pickupDate || l.createdAt)?.getTime() || 0; return t >= a && t <= b; })())
       .map((l) => ({ id: l.id, lane: lane(l), miles: num(l.miles), pay: Math.round(driverPayFor(l, state.money.get(l.id)?.rate, d) * 100) / 100 }));
-    const total = loads.reduce((s, l) => s + l.pay, 0);
+    const total = Math.round(loads.reduce((s2, l) => s2 + l.pay, 0) * 100) / 100;
+    const noRate = !num(d.payRate);
     preview.replaceChildren(table([
       { label: "Load", cell: (l) => h("span", { class: "mono" }, shortId(l.id)) },
       { label: "Lane", cell: (l) => l.lane },
       { label: "Miles", cell: (l) => String(l.miles), align: "right" },
       { label: "Pay", cell: (l) => h("span", { class: "mono" }, money(l.pay)), align: "right" },
-    ], loads, "No delivered loads for this driver in that range."), h("p", { class: "strong" }, "Gross pay: " + money(total)));
-    return { d, loads, total };
+    ], loads, "No delivered loads for this driver in that range. You can still enter a pay amount."),
+    loads.length ? h("p", { class: "muted small" }, `From loads: ${money(total)}${noRate ? " (this driver has no pay rate set; set it in Drivers & trucks, or enter the amount)" : ""}`) : null);
+    calc = { d, loads, total };
+    if (!typed) payIn.value = loads.length ? total.toFixed(2) : "";
+    payHint.textContent = typed && payIn.value !== "" && num(payIn.value) !== total
+      ? `Changed from ${money(total)} (from loads). `
+      : "Fills in from the driver's delivered loads. Type a different amount to override.";
+    if (typed && num(payIn.value) !== total) payHint.append(h("button", { type: "button", class: "btn-link small", onClick: () => { typed = false; compute(); } }, "Use loads total"));
+    showNet();
+    return calc;
   };
   [driverSel, from, to].forEach((el) => el.addEventListener("change", compute));
+  payIn.addEventListener("input", () => { typed = true; compute(); });
+  dedIn.addEventListener("input", showNet);
   const form = h("form", { class: "stack", onSubmit: async (e) => {
     e.preventDefault();
     const r = compute();
     if (!r) return;
-    const deductions = num(form.deductions.value);
+    const pay = Math.round(num(payIn.value) * 100) / 100, deductions = Math.round(num(dedIn.value) * 100) / 100;
+    if (!pay && !confirm("Issue a $0 paystub?")) return;
     const ok = await guard(() => addDoc(collection(db, "paystubs"), {
-      carrierId: cid(ctx), driverId: r.d.id, driverName: r.d.name || r.d.email,
-      periodStart: from.value, periodEnd: to.value, loads: r.loads, gross: r.total,
-      deductions, deductionNote: form.deductionNote.value.trim(), net: Math.round((r.total - deductions) * 100) / 100,
-      miles: r.loads.reduce((s, l) => s + l.miles, 0), createdAt: serverTimestamp(),
+      carrierId: cid(ctx), driverId: r.d.id, driverName: r.d.name || r.d.username || r.d.email || "",
+      periodStart: from.value, periodEnd: to.value, loads: r.loads,
+      loadsPay: r.total, adjustment: Math.round((pay - r.total) * 100) / 100, gross: pay,
+      deductions, deductionNote: form.deductionNote.value.trim(), net: Math.round((pay - deductions) * 100) / 100,
+      miles: r.loads.reduce((s2, l) => s2 + l.miles, 0), createdAt: serverTimestamp(),
     }), "Paystub issued");
-    if (ok) { form.reset(); preview.replaceChildren(); }
+    if (ok) { form.reset(); typed = false; preview.replaceChildren(); netLine.replaceChildren(); calc = null; }
   } },
-    h("div", { class: "form-grid" }, field("Driver", driverSel), field("From", from), field("To", to),
-      field("Deductions ($)", input("deductions", { type: "number", step: "0.01", min: "0" })),
+    h("div", { class: "form-grid" }, field("Driver", driverSel), field("From", from), field("To", to)),
+    preview,
+    h("div", { class: "form-grid" },
+      h("label", { class: "field" }, h("span", { class: "field-label" }, "Driver pay ($)"), payIn, payHint),
+      field("Deductions ($)", dedIn),
       field("Deduction note", input("deductionNote", { placeholder: "Advances, escrow…" }))),
-    preview, h("div", null, btn("Issue paystub", null, "primary", { type: "submit" })));
+    netLine,
+    h("div", null, btn("Issue paystub", null, "primary", { type: "submit" })));
 
   const issued = h("div");
-  carrierData(ctx, (s) => {
-    state = s;
+  carrierData(ctx, (s2) => {
+    state = s2;
     const cur = driverSel.value;
-    driverSel.replaceChildren(h("option", { value: "" }, "Choose driver"), ...s.drivers.map((d) => h("option", { value: d.id, selected: d.id === cur }, d.name || d.email)));
+    driverSel.replaceChildren(h("option", { value: "" }, "Choose driver"), ...s2.drivers.map((d) => h("option", { value: d.id, selected: d.id === cur }, d.name || d.username || d.email)));
+    compute();
   });
-  ctx.sub(watch(q(ctx, "paystubs"), (r) => issued.replaceChildren(table([
-    { label: "Driver", cell: (p) => h("span", { class: "strong" }, p.driverName) },
-    { label: "Period", cell: (p) => `${fmtDate(p.periodStart)} – ${fmtDate(p.periodEnd)}` },
-    { label: "Loads", cell: (p) => String((p.loads || []).length), align: "right" },
-    { label: "Net", cell: (p) => h("span", { class: "mono" }, money(p.net)), align: "right" },
-  ], r.sort(byNewest), "No paystubs issued yet."))));
+  ctx.sub(watch(q(ctx, "paystubs"), (r) => {
+    r.sort(byNewest);
+    issued.replaceChildren(r.length ? h("div", { class: "list" }, r.map((p) => h("div", { class: "row" },
+      h("div", { class: "grow" },
+        h("div", { class: "strong" }, p.driverName || "Driver"),
+        h("div", { class: "muted small" }, [`${fmtDate(p.periodStart)} – ${fmtDate(p.periodEnd)}`, `${(p.loads || []).length} load${(p.loads || []).length === 1 ? "" : "s"}`,
+          p.deductions ? `pay ${money(p.gross)} − ${money(p.deductions)}` : null].filter(Boolean).join(" · "))),
+      h("b", { class: "mono" }, money(p.net)),
+      btn("Delete", () => confirm(`Delete ${p.driverName || "this driver"}'s paystub for ${fmtDate(p.periodStart)} – ${fmtDate(p.periodEnd)}? The driver won't see it anymore.`)
+        && guard(() => deleteDoc(doc(db, "paystubs", p.id)), "Paystub deleted"), "ghost", { class: "btn btn-ghost btn-sm danger" })))) : h("p", { class: "empty" }, "No paystubs issued yet."));
+  }));
   root.append(card("Issue a paystub", null, form), card("Issued paystubs", null, issued));
 }
 

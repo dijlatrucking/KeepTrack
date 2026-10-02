@@ -67,15 +67,45 @@ export function pill(status, label) {
   return h("span", { class: "pill pill-" + tone }, label || text);
 }
 
-export function toast(msg, kind = "info") {
+// Pop-up messages. At most two are on screen; the same message repeated (deleting 20 papers) rolls into
+// one with a count instead of stacking up. Tap one to dismiss it.
+// msg can be a function of the running count, for summaries ("Copied 5 files to Google Drive"),
+// and { key, add } groups different calls into one message.
+const MAX_TOASTS = 2;
+const liveToasts = new Map();
+export function toast(msg, kind = "info", { key, add = 1 } = {}) {
   let box = document.getElementById("toasts");
   if (!box) {
     box = h("div", { id: "toasts", role: "status", "aria-live": "polite" });
     document.body.append(box);
   }
-  const t = h("div", { class: "toast toast-" + kind }, msg);
-  box.append(t);
-  setTimeout(() => t.remove(), 4500);
+  const k = key || kind + "|" + (typeof msg === "function" ? msg(1) : msg);
+  const text = (n) => (typeof msg === "function" ? msg(n) : n > 1 ? `${msg} ×${n}` : msg);
+  const ms = kind === "bad" ? 7000 : 3500;
+  let t = liveToasts.get(k);
+  if (t && t.el.isConnected) {
+    t.n += add;
+    t.el.textContent = text(t.n);
+    t.el.className = "toast toast-" + kind;
+    clearTimeout(t.timer);
+    box.append(t.el); // newest goes to the end
+  } else {
+    const el = h("div", { class: "toast toast-" + kind });
+    t = { el, n: add };
+    el.textContent = text(t.n);
+    el.addEventListener("click", () => { el.remove(); liveToasts.delete(k); });
+    liveToasts.set(k, t);
+    box.append(el);
+  }
+  t.timer = setTimeout(() => { t.el.remove(); if (liveToasts.get(k) === t) liveToasts.delete(k); }, ms);
+  // keep the screen clear: drop the oldest beyond the limit (errors are kept over good news)
+  const all = [...box.children];
+  while (all.length > MAX_TOASTS) {
+    const victim = all.find((x) => !x.classList.contains("toast-bad")) || all[0];
+    all.splice(all.indexOf(victim), 1);
+    victim.remove();
+    for (const [kk, v] of liveToasts) if (v.el === victim) liveToasts.delete(kk);
+  }
 }
 
 export function card(title, actions, ...body) {
@@ -139,10 +169,14 @@ export async function guard(fn, okMsg) {
 export function friendlyError(e) {
   const code = e && e.code ? e.code : "";
   const map = {
-    "auth/invalid-credential": "Wrong email or password.",
-    "auth/email-already-in-use": "That email already has an account. Sign in instead.",
+    "auth/invalid-credential": "Wrong username or password.",
+    "auth/wrong-password": "Wrong username or password.",
+    "auth/user-not-found": "Wrong username or password.",
+    "auth/too-many-requests": "Too many tries. Wait a few minutes and try again.",
+    "auth/email-already-in-use": "That username is already taken. Try another one.",
     "auth/weak-password": "Password needs at least 6 characters.",
-    "auth/invalid-email": "That email doesn't look right.",
+    "auth/invalid-email": "That username doesn't look right. Use letters and numbers, no spaces.",
+    "auth/requires-recent-login": "For safety, sign out and back in, then try again.",
     "permission-denied": "You don't have access to do that.",
     "not-found": "Someone else just deleted that. The page will catch up in a moment.",
   };

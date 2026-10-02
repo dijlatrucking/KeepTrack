@@ -177,8 +177,13 @@ details.stub summary { display: flex; justify-content: space-between; gap: 12px;
 .request-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 4px 16px; font-size: 14px; }
 
 /* Toasts */
-#toasts { position: fixed; right: 16px; bottom: 16px; display: flex; flex-direction: column; gap: 8px; z-index: 50; }
-.toast { background: var(--ink); color: #fff; padding: 12px 16px; border-radius: 10px; font-size: 14px; max-width: 340px; box-shadow: 0 6px 20px rgba(0,0,0,0.18); }
+#toasts { position: fixed; right: 16px; bottom: 16px; display: flex; flex-direction: column; gap: 6px; z-index: 50; pointer-events: none; }
+.toast { background: var(--ink); color: #fff; padding: 10px 14px; border-radius: 10px; font-size: 14px; line-height: 1.35; max-width: 340px; box-shadow: 0 6px 20px rgba(0,0,0,0.18); pointer-events: auto; cursor: pointer; animation: toast-in .15s ease-out; }
+@keyframes toast-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@media (max-width: 600px) {
+  #toasts { left: 12px; right: 12px; bottom: 12px; align-items: center; }
+  .toast { max-width: 100%; width: 100%; font-size: 13.5px; padding: 9px 12px; }
+}
 .toast-ok { background: var(--ok); }
 .toast-bad { background: var(--bad); }
 
@@ -280,3 +285,14 @@ details.stub summary { display: flex; justify-content: space-between; gap: 12px;
 .sent-box:empty { display: none; }
 .sent-box { display: flex; flex-direction: column; gap: 4px; border-top: 1px solid var(--line-soft); padding-top: 10px; }
 .sent-box .row { padding: 8px 0; }
+
+/* Owner documents: one row per paper, with a select mode for deleting many */
+.select-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.doc-row { align-items: center; }
+.doc-row .grow { min-width: 0; flex: 1 1 200px; }
+.doc-row .strong { overflow-wrap: anywhere; }
+.doc-row.picking { cursor: pointer; }
+.pick { width: 22px; height: 22px; flex: 0 0 auto; accent-color: var(--accent); }
+.paystub-net:empty { display: none; }
+.paystub-net { margin: 0; font-size: 15px; }
+.footer-link { font-size: inherit; min-height: 0; padding: 0; text-decoration: underline; }
