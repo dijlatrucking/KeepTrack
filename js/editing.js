@@ -62,6 +62,13 @@ async function pool(items, size, fn) {
   await Promise.all(Array.from({ length: Math.min(size, items.length) }, worker));
 }
 
+// The owner's backup report lists what's in Drive: after papers in it are deleted, it's made again
+// (a moment later, once for a whole batch). Only the owner can save the report.
+export function reportChanged(ctx, docs) {
+  if (role(ctx) !== "owner" || !docs.some((d) => d.driveFileId || d.driveMissing)) return;
+  import("./storage.js").then((m) => m.updateReportSoon()).catch(() => {});
+}
+
 // Re-file a paper's Drive copy after its details change (the Drive script moves and renames it).
 async function refile(ids) {
   if (!ids.length || !(await driveUrl())) return 0;
@@ -162,6 +169,7 @@ export async function deleteDocFlow(ctx, d, { ask = true } = {}) {
     // in a bulk delete the caller reports errors once, for the whole job
     const ok = ask ? await guard(del, "Paper deleted") : await del();
     if (ok && ask && drive === null && inDrive) toast("Deleted in KeepTrack, but its Drive copy couldn't be removed. You can delete it in Drive.", "bad");
+    if (ok && ask) reportChanged(ctx, [d]); // a bulk delete does this once, at the end
     return !!ok;
   } finally { deleting.delete(d.id); }
 }
@@ -169,10 +177,12 @@ export async function deleteDocFlow(ctx, d, { ask = true } = {}) {
 // Deletes many papers at once (a few at a time), reporting progress; one summary at the end.
 export async function bulkDeleteDocs(ctx, docs, onProgress = () => {}) {
   let done = 0, failed = 0;
+  const gone = [];
   await pool(docs, 4, async (d) => {
-    try { (await deleteDocFlow(ctx, d, { ask: false })) ? done++ : failed++; } catch (e) { console.warn(e); failed++; }
+    try { if (await deleteDocFlow(ctx, d, { ask: false })) { done++; gone.push(d); } else failed++; } catch (e) { console.warn(e); failed++; }
     onProgress(done + failed, docs.length);
   });
+  reportChanged(ctx, gone);
   return { done, failed };
 }
 
@@ -219,6 +229,7 @@ export async function deleteLoadFlow(ctx, l) {
         let done = 0;
         status.textContent = `Deleting papers… 0/${papers.length}`;
         await pool(papers, 4, async (d) => { await deleteDocFlow(ctx, d, { ask: false }); status.textContent = `Deleting papers… ${++done}/${papers.length}`; });
+        reportChanged(ctx, papers);
       } else if (papers.length) {
         const b = writeBatch(db);
         papers.forEach((d) => b.update(doc(db, "documents", d.id), { loadId: null, loadLabel: null }));

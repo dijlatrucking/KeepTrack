@@ -216,11 +216,12 @@ function docsView(ctx, root) {
       check,
       h("div", { class: "grow" },
         h("div", { class: "strong" }, d.name || d.kind || "Document",
-          d.fileFreed && d.driveFileId ? h("span", { class: "pill pill-neutral tag" }, "In Drive only") : d.fileCleared ? h("span", { class: "pill pill-neutral tag" }, "Scan cleared") : null),
+          d.driveMissing ? h("span", { class: "pill pill-warn tag" }, "Missing from Drive")
+            : d.fileFreed && d.driveFileId ? h("span", { class: "pill pill-neutral tag" }, "In Drive only") : d.fileCleared ? h("span", { class: "pill pill-neutral tag" }, "Scan cleared") : null),
         h("div", { class: "muted small" }, [d.kind || d.category, ctx.carrierName(d.carrierId), d.uploaderName, d.loadLabel ? d.loadLabel.split(" ")[0] : null, ago(d.createdAt)].filter(Boolean).join(" · "))),
       pill(d.status),
       selecting ? null : h("div", { class: "row-meta" }, btn("View", () => openDoc(d), "ghost", { class: "btn btn-ghost btn-sm" }), ...docActions(ctx, d),
-        d.driveUrl ? h("a", { href: d.driveUrl, target: "_blank", rel: "noopener", class: "btn btn-ghost btn-sm" }, "In Drive")
+        d.driveUrl && !d.driveMissing ? h("a", { href: d.driveUrl, target: "_blank", rel: "noopener", class: "btn btn-ghost btn-sm" }, "In Drive")
           : d.fileFreed || d.fileCleared ? null
           : btn("To Drive", async () => { const j = await sendToDrive(d.id, { quiet: true }); toast(j ? `Copied to Drive: ${j.folder}` : "Couldn't reach Google Drive. Check Settings.", j ? "ok" : "bad"); }, "ghost", { class: "btn btn-ghost btn-sm" })));
   };

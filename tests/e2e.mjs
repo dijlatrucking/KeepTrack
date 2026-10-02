@@ -203,6 +203,12 @@ async function open(who, viewport = { width: 1280, height: 900 }) {
   return p;
 }
 const toast = (p, text) => p.locator(".toast", { hasText: text }).first().waitFor();
+const waitFor = async (fn, what, ms = 15000) => { const t0 = Date.now(); while (!(await fn())) { if (Date.now() - t0 > ms) throw new Error(what); await new Promise((r) => setTimeout(r, 200)); } };
+// The backup report: always the one "KeepTrack backup report", replaced each time it's made.
+const lastReport = () => (backupPdfs.length ? backupPdfs[backupPdfs.length - 1].text : "");
+// What it should say: every paper with a copy in Drive (not rejected, not cleared, not missing).
+const inDriveNow = async () => (await adminDocs("documents")).filter((d) => d.driveFileId && d.status !== "rejected" && !d.fileCleared && !d.driveMissing).length;
+const reportSays = (n) => lastReport().includes(n ? `${n} scan${n === 1 ? "" : "s"} backed up in Google Drive` : "Nothing from KeepTrack is backed up in Google Drive right now");
 const heading = (p, name) => p.getByRole("heading", { name, exact: true }).first().waitFor();
 const nav = async (p, label) => {
   const menu = p.locator(".menu-btn");
@@ -392,7 +398,17 @@ await run("Driver changes their password, signs out, and signs back in with user
   await driver.getByRole("button", { name: "Change password" }).click();
   const dlg = driver.locator("dialog[open]");
   await dlg.locator('input[name="current"]').fill("wrong-one");
-  await dlg.locator('input[name="next"]').fill("driver-pass-2");
+  const next = dlg.locator('input[name="next"]');
+  await next.fill("driver-pass-2");
+  // Show / Hide: see what you typed, without the cursor (or phone keyboard) leaving the box
+  if ((await next.getAttribute("type")) !== "password") throw new Error("The new password should start hidden");
+  const nextBox = dlg.locator(".pw-wrap", { has: driver.locator('input[name="next"]') });
+  await nextBox.getByRole("button", { name: "Show" }).click();
+  if ((await next.getAttribute("type")) !== "text") throw new Error("Show didn't show the password");
+  if (!(await next.evaluate((el) => document.activeElement === el))) throw new Error("Tapping Show took the cursor out of the box");
+  if ((await next.inputValue()) !== "driver-pass-2") throw new Error("Showing it changed what was typed");
+  await nextBox.getByRole("button", { name: "Hide" }).click();
+  if ((await next.getAttribute("type")) !== "password") throw new Error("Hide didn't hide it again");
   await dlg.locator('input[name="again"]').fill("driver-pass-2");
   await dlg.getByRole("button", { name: "Save" }).click();
   await dlg.getByText("Your current password isn't right.").waitFor();
@@ -888,6 +904,8 @@ await run("Nina signs in with what the owner sent and is asked to pick her own p
   nina = await open("nina", { width: 390, height: 844 });
   await nina.getByLabel("Username").fill("nina.new");
   await nina.getByLabel("Password").fill(ninaStart);
+  await nina.getByRole("button", { name: "Show" }).click(); // check what she typed
+  if ((await nina.getByLabel("Password").getAttribute("type")) !== "text") throw new Error("Show didn't work on the sign-in page");
   await nina.getByRole("button", { name: "Sign in" }).click();
   const dlg = nina.locator("dialog[open]");
   await dlg.getByRole("heading", { name: "Pick your own password" }).waitFor();
@@ -914,7 +932,13 @@ await run("Owner checks password resets are set up, then resets Nina's password"
   await nav(owner, "Accounts");
   await owner.locator(".acct-row", { hasText: "Nina New" }).getByRole("button", { name: "Reset password" }).click();
   const dlg = owner.locator("dialog[open]");
-  await dlg.locator("input[name=password]").fill("reset-5678");
+  // the new password is shown (it's about to be sent), with Hide for when someone's looking
+  const pw = dlg.locator("input[name=password]");
+  if ((await pw.getAttribute("type")) !== "text") throw new Error("The new password should be shown");
+  await dlg.getByRole("button", { name: "Hide" }).click();
+  if ((await pw.getAttribute("type")) !== "password") throw new Error("Hide didn't hide the new password");
+  await dlg.getByRole("button", { name: "Show" }).click();
+  await pw.fill("reset-5678");
   await dlg.locator("input[name=temp]").uncheck();
   await dlg.getByRole("button", { name: "Reset password" }).click();
   await toast(owner, "New password set for Nina New");
@@ -1014,25 +1038,71 @@ await run("Owner backs up every scan to Drive, with a PDF report listing each on
   const missing = shouldBe.filter((d) => !d.backedUpAt || !d.driveFileId);
   if (missing.length) throw new Error(`${missing.length} scans weren't marked as backed up`);
   if (backupPdfs.length !== 1) throw new Error(`Expected 1 backup report, got ${backupPdfs.length}`);
+  if (backupPdfs[0].name !== "KeepTrack backup report") throw new Error("Report should be the one 'KeepTrack backup report', got " + backupPdfs[0].name);
   const pdf = backupPdfs[0].text;
-  if (!pdf.includes(`${shouldBe.length} scans copied to Google Drive`)) throw new Error("Report doesn't say how many scans were copied");
-  for (const want of ["Lumper receipt", "$85.00", "Test Carrier A", "Drew Driver", "W-9 Test Carrier A"]) if (!pdf.includes(want)) throw new Error("Report is missing: " + want);
+  if (!reportSays(shouldBe.length)) throw new Error("Report doesn't say how many scans are in Drive");
+  for (const want of ["Lumper receipt", "$85.00", "Test Carrier A", "Drew Driver", "W-9 Test Carrier A", "4471823 \xb7 Boise"]) if (!pdf.includes(want)) throw new Error("Report is missing: " + want);
   if (!/\/URI \(https:\/\/drive\.test\/file_/.test(pdf)) throw new Error("Report has no links to the files in Drive");
   await card.getByText(/Last backup:/).waitFor();
-  // a second backup finds nothing new: declining the fresh report changes nothing
-  owner.once("dialog", (d) => d.dismiss());
+  await card.getByText(`Backup report: ${shouldBe.length} scans in Drive`).waitFor();
+  // a second backup finds nothing new and copies nothing twice, but still checks Drive and makes the report
+  // again (in case it was deleted in Drive), replacing the one before
+  const copies = driveFiles.size;
   await card.getByRole("button", { name: "Back up to Drive" }).click();
   await toast(owner, "Everything is already backed up.");
-  if (backupPdfs.length !== 1) throw new Error("A report was made without asking");
-  // the report was deleted in Drive? a fresh one lists everything again, without copying anything twice
-  const copies = driveFiles.size;
-  owner.once("dialog", (d) => d.accept());
-  await card.getByRole("button", { name: "Back up to Drive" }).click();
-  const t0 = Date.now();
-  while (backupPdfs.length < 2 && Date.now() - t0 < 30000) await owner.waitForTimeout(200);
+  await waitFor(() => backupPdfs.length === 2, "The report wasn't made again");
   await card.getByRole("button", { name: "Back up to Drive", exact: true }).waitFor();
-  if (backupPdfs.length !== 2 || !backupPdfs[1].text.includes(`${shouldBe.length} scans copied`)) throw new Error("Fresh report doesn't list everything");
-  if (driveFiles.size !== copies) throw new Error("Making a fresh report copied scans again");
+  if (backupPdfs[1].name !== backupPdfs[0].name) throw new Error("A second report file was made instead of replacing the first");
+  if (!reportSays(shouldBe.length)) throw new Error("The new report doesn't list everything");
+  if (driveFiles.size !== copies) throw new Error("Backing up again copied scans twice");
+});
+
+await run("The backup report stays current: a paper deleted in KeepTrack drops off it, one deleted in Drive is copied back", async () => {
+  // two papers just for this check (removed again at the end, so later counts are unchanged)
+  await seed(async (db) => {
+    const cid = (await getDocs(collection(db, "carriers"))).docs.find((d) => d.data().name === "Test Carrier A").id;
+    for (const k of ["A", "B"]) {
+      await setDoc(doc(db, "documents", "reportCheck" + k), { carrierId: cid, kind: "Other", name: "Report check " + k, status: "approved", uploadedBy: ownerUid, uploaderName: "Test Owner", uploaderRole: "owner", createdAt: new Date() });
+      await setDoc(doc(db, "docFiles", "reportCheck" + k), { carrierId: cid, uploadedBy: ownerUid, data: "data:image/jpeg;base64,AAAA" + k });
+    }
+  });
+  const card = owner.locator(".card", { hasText: "Storage & backup" });
+  await card.getByRole("button", { name: "Back up to Drive" }).click();
+  await toast(owner, "Backed up 2 scans to Google Drive");
+  await card.getByRole("button", { name: "Back up to Drive", exact: true }).waitFor();
+  if (!lastReport().includes("Report check A") || !lastReport().includes("Report check B")) throw new Error("New papers aren't in the report");
+  let n = await inDriveNow();
+  if (!reportSays(n)) throw new Error(`Report should count ${n} scans`);
+  // the owner deletes A in KeepTrack: its Drive copy goes, and the report is made again without it
+  const made = backupPdfs.length;
+  await nav(owner, "Documents");
+  await owner.getByLabel("Search all documents").fill("Report check A");
+  owner.once("dialog", (d) => d.accept());
+  await owner.locator(".doc-row", { hasText: "Report check A" }).first().getByRole("button", { name: "Delete" }).click();
+  await toast(owner, "Paper deleted");
+  await waitFor(() => backupPdfs.length > made && !lastReport().includes("Report check A"), "The report still lists the deleted paper");
+  if (!lastReport().includes("Report check B")) throw new Error("The report lost a paper that's still there");
+  n = await inDriveNow();
+  await waitFor(() => reportSays(n), `Report should count ${n} scans after the delete`);
+  await owner.getByLabel("Search all documents").fill("");
+  // B's copy is deleted straight in Drive: the next backup notices, copies it back, and the report links the new copy
+  driveFiles.get("file_reportCheckB").trashed = true;
+  await nav(owner, "Settings");
+  await card.getByRole("button", { name: "Back up to Drive" }).click();
+  await toast(owner, "Backed up 1 scan to Google Drive");
+  await card.getByText("1 had been deleted in Drive, so it was copied again.").waitFor();
+  if (driveFiles.get("file_reportCheckB").trashed) throw new Error("B wasn't copied back to Drive");
+  if (!lastReport().includes("Report check B") || !reportSays(n)) throw new Error("Report doesn't list B again");
+  // tidy up: B goes too (the report follows)
+  const made2 = backupPdfs.length;
+  await nav(owner, "Documents");
+  await owner.getByLabel("Search all documents").fill("Report check B");
+  owner.once("dialog", (d) => d.accept());
+  await owner.locator(".doc-row", { hasText: "Report check B" }).first().getByRole("button", { name: "Delete" }).click();
+  await toast(owner, "Paper deleted");
+  await waitFor(() => backupPdfs.length > made2 && !lastReport().includes("Report check B"), "The report still lists B");
+  await owner.getByLabel("Search all documents").fill("");
+  await nav(owner, "Settings");
 });
 
 await run("A dispatcher can't run a backup through the Drive script", async () => {
@@ -1087,19 +1157,63 @@ await run("Rinse and repeat: a new scan after freeing is counted, backed up and 
     return t && t.querySelector(".stat-value").textContent === "1";
   });
   const card = owner.locator(".card", { hasText: "Storage & backup" });
+  const made = backupPdfs.length;
   await card.getByRole("button", { name: "Back up to Drive" }).click();
   await toast(owner, "Backed up 1 scan to Google Drive");
-  const last = backupPdfs[backupPdfs.length - 1];
-  if (backupPdfs.length !== 3 || !last.text.includes("1 scan copied") || !last.text.includes("Registration")) throw new Error("The new scan didn't get its own backup report");
+  await card.getByRole("button", { name: "Back up to Drive", exact: true }).waitFor();
+  if (backupPdfs.length <= made || !lastReport().includes("Registration")) throw new Error("The new scan isn't in the backup report");
+  if (!reportSays(await inDriveNow())) throw new Error("The report should list everything in Drive, old and new");
   owner.once("dialog", (d) => d.accept());
   await card.getByRole("button", { name: "Free up space" }).click();
   await toast(owner, /Freed about .* \(1 scan\)/);
   if ((await adminDocs("docFiles")).length) throw new Error("The new scan is still in the database");
 });
 
-// ---------- 7c. Editing and deleting papers and loads that are already backed up ----------
-const waitFor = async (fn, what, ms = 15000) => { const t0 = Date.now(); while (!(await fn())) { if (Date.now() - t0 > ms) throw new Error(what); await new Promise((r) => setTimeout(r, 200)); } };
+await run("A moved scan deleted in Drive is reported as missing, and clears once it's put back", async () => {
+  await seed(async (db) => {
+    const cid = (await getDocs(collection(db, "carriers"))).docs.find((d) => d.data().name === "Test Carrier A").id;
+    await setDoc(doc(db, "documents", "reportCheckC"), { carrierId: cid, kind: "Other", name: "Report check C", status: "approved", uploadedBy: ownerUid, uploaderName: "Test Owner", uploaderRole: "owner", createdAt: new Date() });
+    await setDoc(doc(db, "docFiles", "reportCheckC"), { carrierId: cid, uploadedBy: ownerUid, data: "data:image/jpeg;base64,AAAC" });
+  });
+  const card = owner.locator(".card", { hasText: "Storage & backup" });
+  await card.getByRole("button", { name: "Back up to Drive" }).click();
+  await toast(owner, "Backed up 1 scan to Google Drive");
+  await card.getByRole("button", { name: "Back up to Drive", exact: true }).waitFor();
+  owner.once("dialog", (d) => d.accept());
+  await card.getByRole("button", { name: "Free up space" }).click();
+  await toast(owner, /Freed about .* \(1 scan\)/);
+  // its only copy is in Drive now, and it gets deleted there
+  driveFiles.get("file_reportCheckC").trashed = true;
+  await card.getByRole("button", { name: "Back up to Drive" }).click();
+  await toast(owner, "1 scan missing from Google Drive");
+  await card.getByText("restore it from the Drive trash").waitFor();
+  await card.getByRole("button", { name: "Back up to Drive", exact: true }).waitFor();
+  if (!(await adminDocs("documents")).find((d) => d.id === "reportCheckC").driveMissing) throw new Error("Not flagged as missing");
+  if (!lastReport().includes("Missing from Google Drive") || !lastReport().includes("Report check C")) throw new Error("The report doesn't list the missing scan");
+  if (!reportSays(await inDriveNow())) throw new Error("The report's count should leave out the missing scan");
+  await nav(owner, "Documents");
+  await owner.getByLabel("Search all documents").fill("Report check C");
+  await owner.locator(".doc-row", { hasText: "Report check C" }).first().getByText("Missing from Drive").waitFor();
+  // put back from the Drive trash: the next backup sees it and the report stops calling it missing
+  driveFiles.get("file_reportCheckC").trashed = false;
+  await nav(owner, "Settings");
+  await card.getByRole("button", { name: "Back up to Drive" }).click();
+  await toast(owner, "Everything is already backed up.");
+  await card.getByRole("button", { name: "Back up to Drive", exact: true }).waitFor();
+  if ((await adminDocs("documents")).find((d) => d.id === "reportCheckC").driveMissing) throw new Error("Flag not cleared");
+  if (lastReport().includes("Missing from Google Drive")) throw new Error("The report still says it's missing");
+  // tidy up (the report follows)
+  const made = backupPdfs.length;
+  await nav(owner, "Documents");
+  await owner.getByLabel("Search all documents").fill("Report check C");
+  owner.once("dialog", (d) => d.accept());
+  await owner.locator(".doc-row", { hasText: "Report check C" }).first().getByRole("button", { name: "Delete" }).click();
+  await toast(owner, "Paper deleted");
+  await waitFor(() => backupPdfs.length > made && !lastReport().includes("Report check C"), "The report still lists C");
+  await owner.getByLabel("Search all documents").fill("");
+});
 
+// ---------- 7c. Editing and deleting papers and loads that are already backed up ----------
 await run("Owner edits a paper that only lives in Drive now: the record changes and its Drive copy is re-filed", async () => {
   const w9 = (await adminDocs("documents")).find((d) => d.name === "W-9 Test Carrier A");
   if (!w9 || !w9.fileFreed) throw new Error("Expected the W-9 to be moved to Drive already");
@@ -1420,9 +1534,9 @@ await run("Stress: back up 70 new scans at volume; the 300 volume records with n
   const t0 = Date.now();
   await nav(owner, "Settings");
   const card = owner.locator(".card", { hasText: "Storage & backup" });
-  const before = backupPdfs.length;
+  // (opening Settings may update the report first: the carrier deleted a backed-up paper since)
   await card.getByRole("button", { name: "Back up to Drive" }).click();
-  await waitFor(() => backupPdfs.length > before, "No backup report", 240000);
+  await owner.locator(".toast", { hasText: /Backed up \d+ scans to Google Drive, \d+ didn't make it/ }).first().waitFor({ timeout: 240000 });
   await card.getByRole("button", { name: "Back up to Drive", exact: true }).waitFor({ timeout: 60000 });
   timings.push(["Back up 70 scans while 300 records have no scan", Date.now() - t0]);
   const missing = (await adminDocs("documents")).filter((d) => d.id.startsWith("stress") && !d.backedUpAt);
@@ -1541,6 +1655,9 @@ await run("Stress: owner deletes the 40-paper load together with all its papers"
   if ((await adminDocs("loads")).some((l) => l.id === "STRESSLOAD01") || (await adminDocs("loadMoney")).some((m) => m.id === "STRESSLOAD01")) throw new Error("Load left behind");
   const live = [...driveFiles.values()].filter((f) => !f.trashed && f.docId.startsWith("stressPaper"));
   if (live.length) throw new Error(`${live.length} Drive copies left behind`);
+  // the backup report is made again without them (and without the carrier's deletes before this)
+  const n = await inDriveNow();
+  await waitFor(() => reportSays(n) && !lastReport().includes("BOL stress") && !lastReport().includes("Stress company paper 02"), "The backup report still lists deleted papers", 60000);
   await owner.getByLabel("Search loads").fill("");
 });
 
@@ -1571,6 +1688,9 @@ await run("Stress: free up space at volume, then no orphans anywhere and the sto
     const freed = docs.filter((d) => d.fileFreed).length, cleared = docs.filter((d) => d.fileCleared).length;
     throw new Error(`Meter doesn't match: records say ${held} held (${docs.length} total, ${freed} freed, ${cleared} cleared); card says: ${meter.replace(/\s+/g, " ").slice(0, 300)}`);
   }
+  await waitFor(async () => reportSays(await inDriveNow()), "The backup report doesn't match what's in Drive", 60000);
+  const n = await inDriveNow();
+  await card.getByText(`Backup report: ${n} scan${n === 1 ? "" : "s"} in Drive`).waitFor({ timeout: 30000 });
 });
 
 for (const [who, p] of Object.entries(pages)) await p.screenshot({ path: `${OUT}/volume-${who}.png` }).catch(() => {});

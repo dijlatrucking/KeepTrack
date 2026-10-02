@@ -136,6 +136,22 @@ export function input(name, attrs = {}) {
   return h("input", { name, class: "input", ...attrs });
 }
 
+// A password box with a Show / Hide button in it, so people can check what they typed.
+// Returns the wrapper (put it in the form); the box itself is wrapper.input.
+// shown: start with the password visible (for passwords the owner is about to send someone).
+export function passwordInput(name, attrs = {}, { shown = false } = {}) {
+  const box = input(name, { autocapitalize: "none", autocorrect: "off", spellcheck: "false", ...attrs, type: shown ? "text" : "password" });
+  const toggle = h("button", { type: "button", class: "pw-toggle" }, shown ? "Hide" : "Show");
+  const set = (show) => { box.type = show ? "text" : "password"; toggle.textContent = show ? "Hide" : "Show"; };
+  // keep the cursor (and the phone keyboard) in the box while tapping the button
+  toggle.addEventListener("mousedown", (e) => e.preventDefault());
+  toggle.addEventListener("click", (e) => { e.preventDefault(); set(box.type === "password"); });
+  const wrap = h("span", { class: "pw-wrap" }, box, toggle);
+  wrap.input = box;
+  wrap.show = set;
+  return wrap;
+}
+
 export function select(name, options, attrs = {}) {
   return h("select", { name, class: "input", ...attrs },
     options.map((o) => (typeof o === "string" ? h("option", { value: o }, o) : h("option", { value: o.value, selected: o.selected }, o.label))));

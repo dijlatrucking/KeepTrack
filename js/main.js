@@ -4,7 +4,7 @@ import {
   updatePassword, reauthenticateWithCredential, EmailAuthProvider
 } from "./fb.js";
 import { loginEmail, cleanUsername, USERNAME_RE, USERNAME_HELP, loginName } from "./login.js";
-import { h, field, input, btn, toast, friendlyError } from "./ui.js";
+import { h, field, input, passwordInput, btn, toast, friendlyError } from "./ui.js";
 import { loadCarriers } from "./data.js";
 import ownerViews from "./views/owner.js";
 import dispatcherViews from "./views/dispatcher.js";
@@ -58,7 +58,7 @@ function renderAuth(mode = "signin") {
     catch (x) { err.textContent = friendlyError(x); busy(signin, false); }
   } },
     field("Username", userField(), "Older accounts can use their email here."),
-    field("Password", input("password", { type: "password", autocomplete: "current-password", required: true })),
+    field("Password", passwordInput("password", { autocomplete: "current-password", required: true })),
     btn("Sign in", null, "primary", { type: "submit" }),
     btn("Forgot password?", async () => {
       const typed = signin.username.value.trim();
@@ -104,7 +104,7 @@ function renderAuth(mode = "signin") {
     field("Full name", input("name", { required: true, autocomplete: "name" })),
     field("Phone", input("phone", { type: "tel", autocomplete: "tel" })),
     field("Pick a username", userField({ placeholder: "e.g. drew.smith" }), USERNAME_HELP),
-    field("Password", input("password", { type: "password", autocomplete: "new-password", minlength: "6", required: true }), "At least 6 characters."),
+    field("Password", passwordInput("password", { autocomplete: "new-password", minlength: "6", required: true }), "At least 6 characters."),
     btn("Create account", null, "primary", { type: "submit" }),
     h("p", { class: "muted small" }, "No code? ", btn("Request access instead", () => renderAuth("request"), "link")));
 
@@ -152,7 +152,7 @@ function renderAuth(mode = "signin") {
     field("Full name", input("name", { required: true, autocomplete: "name" })),
     field("Phone", input("phone", { type: "tel", autocomplete: "tel", required: true })),
     field("Pick a username", userField({ placeholder: "e.g. acme.trucking" }), USERNAME_HELP),
-    field("Password", input("password", { type: "password", autocomplete: "new-password", minlength: "6", required: true }), "At least 6 characters."),
+    field("Password", passwordInput("password", { autocomplete: "new-password", minlength: "6", required: true }), "At least 6 characters."),
     field("Anything we should know? (optional)", h("textarea", { name: "note", class: "input", rows: "2", placeholder: "Number of trucks, lanes you run, how you heard about us…" })),
     btn("Request access", null, "primary", { type: "submit" }),
     h("p", { class: "muted small" }, "Drivers: ask your carrier for an invite code instead."));
@@ -230,9 +230,9 @@ function changePassword(user, { forced = false } = {}) {
     h("p", { class: "muted small" }, forced
       ? `Signed in as ${loginName(user)} with a password you were given. Choose your own to keep going.`
       : "Signed in as " + loginName(user)),
-    knowCurrent ? null : field(forced ? "Password you were given" : "Current password", input("current", { type: "password", autocomplete: "current-password", required: true })),
-    field("New password", input("next", { type: "password", autocomplete: "new-password", minlength: "6", required: true }), "At least 6 characters."),
-    field("New password again", input("again", { type: "password", autocomplete: "new-password", minlength: "6", required: true })),
+    knowCurrent ? null : field(forced ? "Password you were given" : "Current password", passwordInput("current", { autocomplete: "current-password", required: true })),
+    field("New password", passwordInput("next", { autocomplete: "new-password", minlength: "6", required: true }), "At least 6 characters."),
+    field("New password again", passwordInput("again", { autocomplete: "new-password", minlength: "6", required: true })),
     err,
     h("div", { class: "row-inline" }, btn(forced ? "Save and continue" : "Save", null, "primary", { type: "submit" }),
       forced ? btn("Sign out", () => { close(); signOut(auth); }, "ghost") : btn("Cancel", close, "ghost")));

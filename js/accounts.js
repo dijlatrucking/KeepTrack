@@ -4,7 +4,7 @@
 //  - Resetting needs Google admin rights over the logins, which a website doesn't have. It goes through
 //    the owner's Drive script (drive/KeepTrackDrive.gs), which checks the request comes from the owner.
 import { db, doc, setDoc, updateDoc, serverTimestamp, spareAuth, createUserWithEmailAndPassword, signOut } from "./fb.js";
-import { h, field, input, select, btn, toast, friendlyError } from "./ui.js";
+import { h, field, input, passwordInput, select, btn, toast, friendlyError } from "./ui.js";
 import { loginEmail, cleanUsername, USERNAME_RE, USERNAME_HELP, suggestPassword, loginMessage, personLabel } from "./login.js";
 import { driveUrl, driveCall } from "./drive.js";
 
@@ -78,7 +78,9 @@ export function addPersonForm(ctx, { onDone, onCancel, carrierId = "", role = "d
   const boxes = ctx.carriers.map((c) => h("label", { class: "check" }, h("input", { type: "checkbox", value: c.id, class: "disp-carrier" }), c.name));
   const dispBox = h("div", { class: "stack" }, h("span", { class: "field-label" }, "Carriers they work"),
     h("div", { class: "checks" }, h("label", { class: "check" }, allBox, h("strong", null, "All carriers")), boxes));
-  const pass = input("password", { type: "text", autocomplete: "off", autocapitalize: "none", spellcheck: "false", minlength: "6", required: true, value: suggestPassword() });
+  // shown by default: the owner is about to send it (Hide is there if someone's looking over their shoulder)
+  const passBox = passwordInput("password", { autocomplete: "off", minlength: "6", required: true, value: suggestPassword() }, { shown: true });
+  const pass = passBox.input;
   const temp = h("input", { type: "checkbox", name: "temp", checked: true });
   const err = h("p", { class: "form-error", role: "alert" });
   const sync = () => {
@@ -115,8 +117,8 @@ export function addPersonForm(ctx, { onDone, onCancel, carrierId = "", role = "d
     dispBox,
     h("div", { class: "form-grid" },
       field("Username", input("username", { type: "text", autocomplete: "off", autocapitalize: "none", spellcheck: "false", required: true, placeholder: "e.g. drew.smith" }), USERNAME_HELP),
-      h("label", { class: "field" }, h("span", { class: "field-label" }, "Starting password"), pass,
-        h("span", { class: "field-hint" }, "At least 6 characters. ", h("button", { type: "button", class: "btn-link small", onClick: () => { pass.value = suggestPassword(); } }, "Make a new one")))),
+      h("label", { class: "field" }, h("span", { class: "field-label" }, "Starting password"), passBox,
+        h("span", { class: "field-hint" }, "At least 6 characters. ", h("button", { type: "button", class: "btn-link small", onClick: () => { pass.value = suggestPassword(); passBox.show(true); } }, "Make a new one")))),
     h("label", { class: "check" }, temp, "Have them pick their own password the first time they sign in"),
     err,
     h("div", { class: "row-inline" }, btn("Add person", null, "primary", { type: "submit" }), onCancel ? btn("Cancel", onCancel, "ghost") : null));
@@ -128,7 +130,8 @@ export function addPersonForm(ctx, { onDone, onCancel, carrierId = "", role = "d
 export function resetPasswordDialog(ctx, u, { onDone } = {}) {
   const dlg = h("dialog", { class: "dialog", "aria-label": "Reset password" });
   const close = () => { dlg.close(); dlg.remove(); };
-  const pass = input("password", { type: "text", autocomplete: "off", autocapitalize: "none", spellcheck: "false", minlength: "6", required: true, value: suggestPassword() });
+  const passBox = passwordInput("password", { autocomplete: "off", minlength: "6", required: true, value: suggestPassword() }, { shown: true });
+  const pass = passBox.input;
   const temp = h("input", { type: "checkbox", name: "temp", checked: true });
   const err = h("p", { class: "form-error", role: "alert" });
   const login = u.username || u.email || "";
@@ -151,8 +154,8 @@ export function resetPasswordDialog(ctx, u, { onDone } = {}) {
   } },
     h("h2", null, "Reset password"),
     h("p", { class: "muted small" }, `${personLabel(u)}${login ? " · " + login : ""}. Their old password stops working right away.`),
-    h("label", { class: "field" }, h("span", { class: "field-label" }, "New password"), pass,
-      h("span", { class: "field-hint" }, "At least 6 characters. ", h("button", { type: "button", class: "btn-link small", onClick: () => { pass.value = suggestPassword(); } }, "Make a new one"))),
+    h("label", { class: "field" }, h("span", { class: "field-label" }, "New password"), passBox,
+      h("span", { class: "field-hint" }, "At least 6 characters. ", h("button", { type: "button", class: "btn-link small", onClick: () => { pass.value = suggestPassword(); passBox.show(true); } }, "Make a new one"))),
     h("label", { class: "check" }, temp, "Have them pick their own password next time they sign in"),
     err,
     h("div", { class: "row-inline" }, btn("Reset password", null, "primary", { type: "submit" }), btn("Cancel", close, "ghost")));

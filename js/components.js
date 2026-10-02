@@ -376,7 +376,10 @@ export function docsReviewQueue(ctx, carrierIds, onCount) {
   let limit = 25, last = [], shownIds = new Set();
   const reject = async (d, reason) => {
     const ok = await guardDoc(d.id, () => updateDoc(doc(db, "documents", d.id), { status: "rejected", rejectReason: reason, reviewedBy: ctx.uid, reviewedAt: serverTimestamp() }), reason === "duplicate" ? "Duplicate rejected" : "Rejected");
-    if (ok !== null) removeFromDrive(d.id);
+    if (ok === null) return;
+    removeFromDrive(d.id);
+    // the owner's backup report stops listing it
+    if (d.driveFileId) import("./editing.js").then((m) => m.reportChanged(ctx, [d])).catch(() => {});
   };
   const draw = (docs) => {
     last = docs;

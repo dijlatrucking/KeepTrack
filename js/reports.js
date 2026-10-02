@@ -1,6 +1,6 @@
 // PDF reports (loads, expenses, 1099 year summary). Built in the browser with jsPDF; opened in a new tab
 // where it can be downloaded, printed or shared.
-import { money, num, fmtDate, toast } from "./ui.js";
+import { money, num, fmtDate, toDate, toast } from "./ui.js";
 
 const JSPDF = "https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js";
 const AUTOTABLE = "https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js";
@@ -112,21 +112,44 @@ export async function taxPdf({ title, sub, quarters, qRows, cats, note }) {
 // The index that goes into Google Drive with each backup: every scan copied, its details and a link
 // to the file in Drive. Returned as base64 (it's saved to Drive, not opened).
 const latin = (v) => String(v ?? "").replace(/→/g, "to").replace(/[^\x00-\xFF]/g, "");
-export async function backupPdf({ title, sub, rows, failed = [] }) {
+// rows: scans in Drive now; missing: scans that only lived in Drive and were deleted there;
+// failed: scans that couldn't be copied this time; notYet: how many others aren't backed up yet.
+export async function backupPdf({ title, sub, rows, missing = [], failed = [], notYet = 0 }) {
   const doc = await newDoc(true);
   header(doc, latin(title), latin(sub));
   doc.setFont("helvetica", "normal"); doc.setFontSize(10);
-  doc.text(latin(`${rows.length} scan${rows.length === 1 ? "" : "s"} copied to Google Drive${failed.length ? ` · ${failed.length} didn't make it (listed at the end)` : ""}. Tap "Open" to see a file in Drive.`), 36, 74);
-  const head = ["Sent", "Carrier", "Paper", "Load", "Sent by", "Amount", "Status", "File"];
-  const body = rows.map((r) => [fmtDate(r.date), r.carrier, r.paper, r.load || "—", r.sentBy || "—", r.amount ? money(r.amount) : "", r.status, r.url ? "Open" : ""].map(latin));
-  doc.autoTable({
-    ...TABLE, startY: 86, head: [head], body,
-    columnStyles: { 7: { textColor: [161, 74, 18], fontStyle: "bold" } },
-    didDrawCell: (c) => { if (c.section === "body" && c.column.index === 7 && rows[c.row.index].url) doc.link(c.cell.x, c.cell.y, c.cell.width, c.cell.height, { url: rows[c.row.index].url }); },
-  });
-  if (failed.length) {
-    doc.autoTable({ ...TABLE, startY: doc.lastAutoTable.finalY + 18, head: [["Didn't make it to Drive", "Why"]], body: failed.map((f) => [latin(f.paper), latin(f.why || "unknown")]) });
+  const s = (n) => (n === 1 ? "" : "s");
+  const atEnd = [missing.length ? `${missing.length} missing from Drive` : "", failed.length ? `${failed.length} didn't make it` : ""].filter(Boolean).join(" · ");
+  doc.text(latin(rows.length
+    ? `${rows.length} scan${s(rows.length)} backed up in Google Drive${atEnd ? " · " + atEnd + " (listed at the end)" : ""}. Tap "Open" to see a file in Drive.`
+    : `Nothing from KeepTrack is backed up in Google Drive right now${atEnd ? " · " + atEnd + " (listed below)" : ""}.`), 36, 74);
+  let y = 86;
+  if (notYet) {
+    doc.setTextColor(90, 95, 105);
+    doc.text(latin(`${notYet} newer scan${s(notYet)} not backed up yet: in KeepTrack, Settings, tap Back up to Drive.`), 36, 90);
+    doc.setTextColor(21, 23, 28);
+    y = 102;
   }
-  footer(doc, "Backup report. The scans themselves are in your KeepTrack folder in Google Drive.");
+  const date = (v) => { const d = toDate(v); return d && !isNaN(d) ? d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" }) : "-"; };
+  if (rows.length) {
+    const head = ["Sent", "Carrier", "Paper", "Load", "Sent by", "Amount", "Status", "File"];
+    const body = rows.map((r) => [date(r.date), r.carrier, r.paper, r.load || "-", r.sentBy || "-", r.amount ? money(r.amount) : "", r.status, r.url ? "Open" : ""].map(latin));
+    doc.autoTable({
+      ...TABLE, startY: y, head: [head], body,
+      columnStyles: { 7: { textColor: [161, 74, 18], fontStyle: "bold" } },
+      didDrawCell: (c) => { if (c.section === "body" && c.column.index === 7 && rows[c.row.index].url) doc.link(c.cell.x, c.cell.y, c.cell.width, c.cell.height, { url: rows[c.row.index].url }); },
+    });
+    y = doc.lastAutoTable.finalY + 18;
+  }
+  if (missing.length) {
+    doc.autoTable({ ...TABLE, startY: y, head: [["Missing from Google Drive", "Carrier", "Load", "What to do"]],
+      body: missing.map((m) => [m.paper, m.carrier, m.load || "-", "Deleted in Drive, and no longer kept in KeepTrack. Restore it from the Drive trash, or delete the paper in KeepTrack."].map(latin)),
+      headStyles: { ...TABLE.headStyles, fillColor: [246, 224, 224] } });
+    y = doc.lastAutoTable.finalY + 18;
+  }
+  if (failed.length) {
+    doc.autoTable({ ...TABLE, startY: y, head: [["Didn't make it to Drive", "Why"]], body: failed.map((f) => [latin(f.paper), latin(f.why || "unknown")]) });
+  }
+  footer(doc, "Backup report. Made again after every backup and whenever papers are deleted, so it matches what's in Google Drive.");
   return doc.output("datauristring").split("base64,")[1];
 }

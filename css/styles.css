@@ -138,6 +138,13 @@ h2 { font-size: 19px; font-weight: 700; }
 .field-hint { font-size: 12px; color: var(--muted); }
 .input { min-height: 44px; padding: 0 12px; border: 1px solid var(--field); border-radius: 10px; background: var(--surface); color: var(--ink); font: inherit; font-size: 15px; width: 100%; }
 textarea.input { padding: 10px 12px; resize: vertical; }
+/* password box with its Show / Hide button */
+.pw-wrap { position: relative; display: block; }
+.pw-wrap .input { padding-right: 70px; }
+.pw-wrap .input::-ms-reveal { display: none; }
+.pw-toggle { position: absolute; top: 1px; right: 1px; bottom: 1px; min-width: 62px; padding: 0 12px; border: 0; border-radius: 0 9px 9px 0; background: transparent; color: var(--accent); font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
+.pw-toggle:hover { color: var(--accent-dark); }
+.pw-toggle:disabled { opacity: 0.6; cursor: wait; }
 .input-sm { min-height: 36px; width: auto; font-size: 14px; }
 .form-error { color: var(--bad); font-weight: 500; min-height: 1em; margin: 0; }
 details.add summary, details.stub summary { cursor: pointer; font-weight: 600; padding: 8px 0; }
@@ -279,6 +286,8 @@ details.stub summary { display: flex; justify-content: space-between; gap: 12px;
 .meter-fill.warn { background: var(--accent); }
 .meter-fill.bad { background: var(--bad); }
 .scanmsg:empty { display: none; }
+.report-line:empty { display: none; }
+.bad-text { color: var(--bad); font-weight: 500; }
 .stats-compact { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
 .stats-compact .stat { padding: 12px 14px; }
 .stats-compact .stat-value { font-size: 24px; }
