@@ -67,12 +67,13 @@ export function pill(status, label) {
   return h("span", { class: "pill pill-" + tone }, label || text);
 }
 
-// Pop-up messages. At most two are on screen; the same message repeated (deleting 20 papers) rolls into
-// one with a count instead of stacking up. Tap one to dismiss it.
-// msg can be a function of the running count, for summaries ("Copied 5 files to Google Drive"),
-// and { key, add } groups different calls into one message.
-const MAX_TOASTS = 2;
-const liveToasts = new Map();
+// Pop-up messages. Never more than two on screen: one spot for good news, one for problems, so a
+// burst of activity (deleting 20 papers, a 44-page scan) can't cover the page. The newest message
+// takes its spot; the same message repeated rolls into one with a count ("Paper deleted ×12").
+// msg can be a function of the running count, and { key, add } groups different calls under one count
+// ("Copied 5 files to Google Drive"). Tap a pop-up to dismiss it.
+const slots = { good: null, bad: null };
+const counts = new Map(); // key → { n, until }
 export function toast(msg, kind = "info", { key, add = 1 } = {}) {
   let box = document.getElementById("toasts");
   if (!box) {
@@ -80,32 +81,23 @@ export function toast(msg, kind = "info", { key, add = 1 } = {}) {
     document.body.append(box);
   }
   const k = key || kind + "|" + (typeof msg === "function" ? msg(1) : msg);
-  const text = (n) => (typeof msg === "function" ? msg(n) : n > 1 ? `${msg} ×${n}` : msg);
-  const ms = kind === "bad" ? 7000 : 3500;
-  let t = liveToasts.get(k);
-  if (t && t.el.isConnected) {
-    t.n += add;
-    t.el.textContent = text(t.n);
-    t.el.className = "toast toast-" + kind;
-    clearTimeout(t.timer);
-    box.append(t.el); // newest goes to the end
-  } else {
-    const el = h("div", { class: "toast toast-" + kind });
-    t = { el, n: add };
-    el.textContent = text(t.n);
-    el.addEventListener("click", () => { el.remove(); liveToasts.delete(k); });
-    liveToasts.set(k, t);
-    box.append(el);
+  const now = Date.now();
+  const c = counts.get(k);
+  const n = c && c.until > now ? c.n + add : add;
+  counts.set(k, { n, until: now + 8000 });
+  const text = typeof msg === "function" ? msg(n) : n > 1 ? `${msg} ×${n}` : msg;
+  const slot = kind === "bad" ? "bad" : "good";
+  let t = slots[slot];
+  if (!t || !t.el.isConnected) {
+    const el = h("div", { class: "toast" });
+    t = slots[slot] = { el, timer: null };
+    el.addEventListener("click", () => { el.remove(); if (slots[slot] === t) slots[slot] = null; });
+    if (slot === "bad") box.prepend(el); else box.append(el);
   }
-  t.timer = setTimeout(() => { t.el.remove(); if (liveToasts.get(k) === t) liveToasts.delete(k); }, ms);
-  // keep the screen clear: drop the oldest beyond the limit (errors are kept over good news)
-  const all = [...box.children];
-  while (all.length > MAX_TOASTS) {
-    const victim = all.find((x) => !x.classList.contains("toast-bad")) || all[0];
-    all.splice(all.indexOf(victim), 1);
-    victim.remove();
-    for (const [kk, v] of liveToasts) if (v.el === victim) liveToasts.delete(kk);
-  }
+  t.el.className = "toast toast-" + kind;
+  t.el.textContent = text;
+  clearTimeout(t.timer);
+  t.timer = setTimeout(() => { t.el.remove(); if (slots[slot] === t) slots[slot] = null; }, kind === "bad" ? 7000 : 3500);
 }
 
 export function card(title, actions, ...body) {

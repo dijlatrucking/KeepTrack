@@ -1094,11 +1094,19 @@ await run("Pop-ups never cover the page: at most two at once, repeats roll into 
     for (let i = 0; i < 5; i++) toast((n) => `Copied ${n} file${n === 1 ? "" : "s"} to Google Drive`, "ok", { key: "drive-ok", add: 2 });
     toast("Saved", "ok");
   });
-  const n = await owner.locator("#toasts .toast").count();
-  if (n > 2) throw new Error(`${n} pop-ups on screen`);
-  await owner.locator("#toasts .toast", { hasText: "Copied 10 files to Google Drive" }).waitFor();
-  await owner.locator("#toasts .toast", { hasText: "Saved" }).click(); // tap to dismiss
-  await owner.locator("#toasts .toast", { hasText: "Saved" }).waitFor({ state: "detached" });
+  let n = await owner.locator("#toasts .toast").count();
+  if (n > 1) throw new Error(`${n} pop-ups on screen for good news`);
+  await owner.locator("#toasts .toast", { hasText: "Saved" }).waitFor(); // the newest message is the one showing
+  await owner.evaluate(async () => {
+    const { toast } = await import("./js/ui.js");
+    toast("Couldn't reach Google Drive", "bad");
+    for (let i = 0; i < 3; i++) toast((n) => `Copied ${n} file${n === 1 ? "" : "s"} to Google Drive`, "ok", { key: "drive-ok", add: 2 });
+  });
+  n = await owner.locator("#toasts .toast").count();
+  if (n !== 2) throw new Error(`Expected one good + one problem pop-up, saw ${n}`);
+  await owner.locator("#toasts .toast", { hasText: "Copied 16 files to Google Drive" }).waitFor(); // counts carry over
+  await owner.locator("#toasts .toast-bad").click(); // tap to dismiss
+  await owner.locator("#toasts .toast-bad").waitFor({ state: "detached" });
 });
 
 await run("Owner selects several papers and deletes them in one go", async () => {
