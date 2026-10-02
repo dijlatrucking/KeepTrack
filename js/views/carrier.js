@@ -223,12 +223,12 @@ function paystubs(ctx, root) {
       .map((l) => ({ id: l.id, lane: lane(l), miles: num(l.miles), pay: Math.round(driverPayFor(l, state.money.get(l.id)?.rate, d) * 100) / 100 }));
     const total = Math.round(loads.reduce((s2, l) => s2 + l.pay, 0) * 100) / 100;
     const noRate = !num(d.payRate);
-    preview.replaceChildren(table([
-      { label: "Load", cell: (l) => h("span", { class: "mono" }, shortId(l.id)) },
-      { label: "Lane", cell: (l) => l.lane },
-      { label: "Miles", cell: (l) => String(l.miles), align: "right" },
-      { label: "Pay", cell: (l) => h("span", { class: "mono" }, money(l.pay)), align: "right" },
-    ], loads, "No delivered loads for this driver in that range. You can still enter a pay amount."),
+    // one line per load, so it fits a phone
+    preview.replaceChildren(loads.length
+      ? h("div", { class: "list" }, loads.map((l) => h("div", { class: "row" },
+          h("div", { class: "grow" }, h("div", null, l.lane), h("div", { class: "muted small" }, `${shortId(l.id)} · ${l.miles.toLocaleString()} mi`)),
+          h("b", { class: "mono" }, money(l.pay)))))
+      : h("p", { class: "empty" }, "No delivered loads for this driver in that range. You can still enter a pay amount."),
     loads.length ? h("p", { class: "muted small" }, `From loads: ${money(total)}${noRate ? " (this driver has no pay rate set; set it in Drivers & trucks, or enter the amount)" : ""}`) : null);
     calc = { d, loads, total };
     if (!typed) payIn.value = loads.length ? total.toFixed(2) : "";
