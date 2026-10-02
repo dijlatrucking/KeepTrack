@@ -89,11 +89,12 @@ function renderAuth(mode = "signin") {
       await batch.commit();
       signingUp = false;
     } catch (x) {
-      signingUp = false;
       // Nothing was created (bad or taken username): keep what they typed and just say what's wrong.
-      if (!cred) { err.textContent = friendlyError(x); busy(signup, false); return; }
+      if (!cred) { signingUp = false; err.textContent = friendlyError(x); busy(signup, false); return; }
+      // An account was made but sign-up didn't finish (bad invite code): remove it, then start over.
       pendingAuthError = friendlyError(x);
       try { await cred.user.delete(); } catch (_) {}
+      signingUp = false;
       renderAuth("signup");
     }
   } },
@@ -136,10 +137,11 @@ function renderAuth(mode = "signin") {
       });
       signingUp = false;
     } catch (x) {
-      signingUp = false;
-      if (!cred) { err.textContent = friendlyError(x); busy(request, false); return; }
+      if (!cred) { signingUp = false; err.textContent = friendlyError(x); busy(request, false); return; }
+      // An account was made but sign-up didn't finish (bad invite code): remove it, then start over.
       pendingAuthError = friendlyError(x);
       try { await cred.user.delete(); } catch (_) {}
+      signingUp = false;
       renderAuth("request");
     }
   } },

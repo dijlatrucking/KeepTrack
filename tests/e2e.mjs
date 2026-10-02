@@ -648,9 +648,9 @@ await run("Carrier issues a paystub: 500 mi × $0.60 = $300", async () => {
   await nav(carrier, "Paystubs");
   await carrier.locator("select[name=driver] option", { hasText: "Drew Driver" }).waitFor({ state: "attached" });
   await carrier.locator("select[name=driver]").selectOption({ label: "Drew Driver" });
-  await carrier.getByLabel("From").fill(iso(-7));
-  await carrier.getByLabel("To").fill(iso(7));
-  await carrier.getByLabel("To").dispatchEvent("change");
+  await carrier.locator("input[name=from]").fill(iso(-7));
+  await carrier.locator("input[name=to]").fill(iso(7));
+  await carrier.locator("input[name=to]").dispatchEvent("change");
   await carrier.getByText("From loads: $300.00").waitFor();
   const pay = carrier.getByLabel("Driver pay ($)");
   if ((await pay.inputValue()) !== "300.00") throw new Error("Driver pay didn't fill in from the loads: " + (await pay.inputValue()));
@@ -661,9 +661,9 @@ await run("Carrier issues a paystub: 500 mi × $0.60 = $300", async () => {
 
 await run("Carrier pays a different amount than the loads add up to (bonus + deduction)", async () => {
   await carrier.locator("select[name=driver]").selectOption({ label: "Drew Driver" });
-  await carrier.getByLabel("From").fill(iso(-7));
-  await carrier.getByLabel("To").fill(iso(7));
-  await carrier.getByLabel("To").dispatchEvent("change");
+  await carrier.locator("input[name=from]").fill(iso(-7));
+  await carrier.locator("input[name=to]").fill(iso(7));
+  await carrier.locator("input[name=to]").dispatchEvent("change");
   await carrier.getByText("From loads: $300.00").waitFor();
   await carrier.getByLabel("Driver pay ($)").fill("350");
   await carrier.getByLabel("Deductions ($)").fill("25");
