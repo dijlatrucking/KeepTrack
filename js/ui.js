@@ -74,7 +74,7 @@ export function pill(status, label) {
 // ("Copied 5 files to Google Drive"). Tap a pop-up to dismiss it.
 const slots = { good: null, bad: null };
 const counts = new Map(); // key → { n, until }
-const MIN_SHOW = 1500; // a message stays at least this long before a different one takes its spot
+const MIN_SHOW = 1200; // a message stays at least this long before the next one takes its spot
 export function toast(msg, kind = "info", { key, add = 1 } = {}) {
   let box = document.getElementById("toasts");
   if (!box) {
@@ -89,26 +89,37 @@ export function toast(msg, kind = "info", { key, add = 1 } = {}) {
   const text = typeof msg === "function" ? msg(n) : n > 1 ? `${msg} ×${n}` : msg;
   const slot = kind === "bad" ? "bad" : "good";
   let t = slots[slot];
-  if (!t || !t.el.isConnected) {
+  if (!t) {
     const el = h("div", { class: "toast" });
-    t = slots[slot] = { el, timer: null, wait: null, key: null, shownAt: 0 };
-    el.addEventListener("click", () => { el.remove(); clearTimeout(t.wait); if (slots[slot] === t) slots[slot] = null; });
-    if (slot === "bad") box.prepend(el); else box.append(el);
+    t = slots[slot] = { el, timer: null, wait: null, key: null, shownAt: 0, queue: [] };
+    el.addEventListener("click", () => { el.remove(); clearTimeout(t.wait); clearTimeout(t.timer); t.queue = []; if (slots[slot] === t) slots[slot] = null; });
   }
-  const show = () => {
-    t.wait = null;
-    t.key = k; t.shownAt = Date.now();
-    t.el.className = "toast toast-" + kind;
-    t.el.textContent = text;
-    if (!t.el.isConnected) { if (slot === "bad") box.prepend(t.el); else box.append(t.el); slots[slot] = t; }
+  const show = (m) => {
+    t.key = m.k; t.shownAt = Date.now();
+    t.el.className = "toast toast-" + m.kind;
+    t.el.textContent = m.text;
+    if (!t.el.isConnected) { if (slot === "bad") box.prepend(t.el); else box.append(t.el); }
     clearTimeout(t.timer);
-    t.timer = setTimeout(() => { t.el.remove(); if (slots[slot] === t) slots[slot] = null; }, kind === "bad" ? 7000 : 3500);
+    t.timer = setTimeout(() => { t.el.remove(); if (slots[slot] === t) slots[slot] = null; }, m.kind === "bad" ? 7000 : 3500);
   };
-  // the same message updates in place; a different one waits until the current one has been seen
-  const age = Date.now() - t.shownAt;
-  clearTimeout(t.wait);
-  if (t.key === k || !t.key || age >= MIN_SHOW) show();
-  else t.wait = setTimeout(show, MIN_SHOW - age);
+  const next = () => {
+    t.wait = null;
+    const m = t.queue.shift();
+    if (!m) return;
+    show(m);
+    if (t.queue.length) t.wait = setTimeout(next, MIN_SHOW);
+  };
+  const m = { k, kind, text };
+  // the message on screen updates in place; others line up and each gets its turn (same ones merge)
+  if (t.key === k && t.el.isConnected) { show(m); return; }
+  const queued = t.queue.find((x) => x.k === k);
+  if (queued) Object.assign(queued, m);
+  else { t.queue.push(m); if (t.queue.length > 3) t.queue.shift(); }
+  if (!t.wait) {
+    const age = Date.now() - t.shownAt;
+    if (!t.el.isConnected || age >= MIN_SHOW) next();
+    else t.wait = setTimeout(next, MIN_SHOW - age);
+  }
 }
 
 export function card(title, actions, ...body) {
