@@ -156,6 +156,7 @@ async function authUser(email, password) {
   return (await r.json()).localId;
 }
 const seed = (fn) => env.withSecurityRulesDisabled((c) => fn(c.firestore()));
+const adminDocs = async (coll) => { let out = []; await seed(async (db) => { out = (await getDocs(collection(db, coll))).docs.map((d) => ({ id: d.id, ...d.data() })); }); return out; };
 
 const ownerUid = await authUser("owner@test.dev", "owner-pass-1");
 await seed((db) => setDoc(doc(db, "users", ownerUid), { role: "owner", name: "Test Owner", email: "owner@test.dev" }));
@@ -869,6 +870,7 @@ await run("Owner adds a driver with a username and starting password, without be
 });
 
 await run("A taken username is refused when adding, and no stray login is left behind", async () => {
+  expectAuthFail.add("owner"); // Google refuses the duplicate login with a 400; that's the point
   await owner.getByRole("button", { name: "+ Add a person" }).click();
   const F = owner.locator(".card", { has: owner.getByRole("heading", { name: "Add a person" }) });
   await F.locator("select[name=carrierId]").selectOption({ label: "Test Carrier A" });
@@ -878,6 +880,7 @@ await run("A taken username is refused when adding, and no stray login is left b
   await F.locator(".form-error", { hasText: "That username is already taken" }).waitFor();
   await F.getByRole("button", { name: "Cancel" }).click();
   if ((await adminDocs("users")).some((u) => u.name === "Someone Else")) throw new Error("A profile was saved anyway");
+  expectAuthFail.delete("owner");
 });
 
 let nina;
@@ -988,7 +991,6 @@ await run("The Drive script parses and has nothing a phone paste would mangle", 
 });
 
 // ---------- 7b. Storage, backup to Drive, free up space ----------
-const adminDocs = async (coll) => { let out = []; await seed(async (db) => { out = (await getDocs(collection(db, coll))).docs.map((d) => ({ id: d.id, ...d.data() })); }); return out; };
 const tile = (p, label) => p.locator(".stat", { has: p.locator(".stat-label", { hasText: label }) }).locator(".stat-value");
 let scansBefore = 0;
 await run("Owner sees roughly how much storage the scans take", async () => {
