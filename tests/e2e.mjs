@@ -1332,12 +1332,13 @@ await run("Stress: owner and carrier edit the same paper at the same moment; one
   await carrier.locator(".card", { hasText: "Document vault" }).locator(".row", { hasText: "Stress company paper 01" }).first().getByRole("button", { name: "Edit" }).click();
   await owner.locator("dialog[open]").getByLabel("Note").fill("owner's note");
   await carrier.locator("dialog[open]").getByLabel("Note").fill("carrier's note");
+  // watch both screens at once: each confirmation is on screen for a moment, then the next message takes its turn
   await Promise.all([
+    toast(owner, "Paper saved"),
+    toast(carrier, "Paper saved"),
     owner.locator("dialog[open]").getByRole("button", { name: "Save", exact: true }).click(),
     carrier.locator("dialog[open]").getByRole("button", { name: "Save", exact: true }).click(),
   ]);
-  await toast(owner, "Paper saved");
-  await toast(carrier, "Paper saved");
   const d = (await adminDocs("documents")).find((x) => x.id === "stressCompany000");
   if (!["owner's note", "carrier's note"].includes(d.note)) throw new Error("Unexpected note: " + d.note);
   await waitFor(() => [...driveFiles.values()].filter((f) => f.docId === "stressCompany000" && !f.trashed).length === 1, "Should be exactly one Drive copy");
