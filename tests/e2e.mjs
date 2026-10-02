@@ -230,6 +230,9 @@ const nav = async (p, label) => {
     const menu = p.locator(".menu-btn");
     if (await menu.isVisible()) { if ((await menu.getAttribute("aria-expanded")) !== "true") await menu.click(); }
     await go(p.locator("nav.site-nav").getByRole("link", { name: where.section, exact: true }));
+    // like a person would: let the section's first page settle before switching tabs (leaving it the
+    // instant it opened can make the database connection log a harmless error)
+    if (where.tabbed && (await p.locator(".page-tabs a.on").innerText()) !== label) await p.waitForTimeout(400);
   }
   if (where.tabbed) await go(p.locator(".page-tabs").getByRole("link", { name: label, exact: true }));
 };
