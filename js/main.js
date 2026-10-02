@@ -1,6 +1,6 @@
 import {
   isConfigured, auth, db, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword,
-  signOut, sendPasswordResetEmail, doc, getDoc, setDoc, onSnapshot, writeBatch, serverTimestamp, collection,
+  signOut, sendPasswordResetEmail, doc, getDoc, setDoc, updateDoc, onSnapshot, writeBatch, serverTimestamp, collection,
   updatePassword, reauthenticateWithCredential, EmailAuthProvider
 } from "./fb.js";
 import { loginEmail, cleanUsername, USERNAME_RE, USERNAME_HELP, loginName } from "./login.js";
@@ -25,6 +25,8 @@ let shellCarrierUnsub = null;
 let renderToken = 0;
 let pendingAuthError = "";
 let signingUp = false;
+let lastPassword = ""; // the password just typed at sign-in (to finish a "pick your own password" without asking twice)
+let askedNewPassword = false;
 
 const brand = () => h("span", { class: "brand" }, h("span", { class: "brand-mark", "aria-hidden": "true" }, "✓"), h("span", null, "KeepTrack"));
 
@@ -52,7 +54,7 @@ function renderAuth(mode = "signin") {
   const signin = h("form", { class: "stack", onSubmit: async (e) => {
     e.preventDefault();
     busy(signin, true); err.textContent = "";
-    try { await signInWithEmailAndPassword(auth, loginEmail(signin.username.value), signin.password.value); }
+    try { lastPassword = signin.password.value; await signInWithEmailAndPassword(auth, loginEmail(signin.username.value), signin.password.value); }
     catch (x) { err.textContent = friendlyError(x); busy(signin, false); }
   } },
     field("Username", userField(), "Older accounts can use their email here."),
@@ -198,35 +200,44 @@ function renderNoProfile(user) {
 }
 
 // Anyone signed in can change their own password (they type the current one first).
-function changePassword(user) {
+// forced: they signed in with a password the owner gave them and are asked to pick their own.
+function changePassword(user, { forced = false } = {}) {
   const err = h("p", { class: "form-error", role: "alert" });
-  const dlg = h("dialog", { class: "dialog", "aria-label": "Change password" });
+  const dlg = h("dialog", { class: "dialog", "aria-label": forced ? "Pick your own password" : "Change password" });
   const close = () => { dlg.close(); dlg.remove(); };
+  const knowCurrent = forced && !!lastPassword;
   const form = h("form", { class: "stack", onSubmit: async (e) => {
     e.preventDefault();
     err.textContent = "";
     if (form.next.value !== form.again.value) { err.textContent = "The new passwords don't match."; return; }
+    const current = knowCurrent ? lastPassword : form.current.value;
+    if (form.next.value === current) { err.textContent = "Pick a password different from the one you were given."; return; }
     form.querySelectorAll("button").forEach((b) => (b.disabled = true));
     try {
-      await reauthenticateWithCredential(user, EmailAuthProvider.credential(user.email, form.current.value));
+      await reauthenticateWithCredential(user, EmailAuthProvider.credential(user.email, current));
       await updatePassword(user, form.next.value);
-      toast("Password changed", "ok");
+      lastPassword = "";
+      try { await updateDoc(doc(db, "users", user.uid), { tempPassword: false }); } catch (_) {}
+      toast(forced ? "You're all set" : "Password changed", "ok");
       close();
     } catch (x) {
       const wrong = x && ["auth/invalid-credential", "auth/wrong-password", "auth/invalid-login-credentials", "auth/user-mismatch"].includes(x.code);
-      err.textContent = wrong ? "Your current password isn't right." : friendlyError(x);
+      err.textContent = wrong ? (forced ? "That temporary password isn't right." : "Your current password isn't right.") : friendlyError(x);
       form.querySelectorAll("button").forEach((b) => (b.disabled = false));
     }
   } },
-    h("h2", null, "Change password"),
-    h("p", { class: "muted small" }, "Signed in as " + loginName(user)),
-    field("Current password", input("current", { type: "password", autocomplete: "current-password", required: true })),
+    h("h2", null, forced ? "Pick your own password" : "Change password"),
+    h("p", { class: "muted small" }, forced
+      ? `Signed in as ${loginName(user)} with a password you were given. Choose your own to keep going.`
+      : "Signed in as " + loginName(user)),
+    knowCurrent ? null : field(forced ? "Password you were given" : "Current password", input("current", { type: "password", autocomplete: "current-password", required: true })),
     field("New password", input("next", { type: "password", autocomplete: "new-password", minlength: "6", required: true }), "At least 6 characters."),
     field("New password again", input("again", { type: "password", autocomplete: "new-password", minlength: "6", required: true })),
     err,
-    h("div", { class: "row-inline" }, btn("Save", null, "primary", { type: "submit" }), btn("Cancel", close, "ghost")));
+    h("div", { class: "row-inline" }, btn(forced ? "Save and continue" : "Save", null, "primary", { type: "submit" }),
+      forced ? btn("Sign out", () => { close(); signOut(auth); }, "ghost") : btn("Cancel", close, "ghost")));
   dlg.append(form);
-  dlg.addEventListener("cancel", (e) => { e.preventDefault(); close(); });
+  dlg.addEventListener("cancel", (e) => { e.preventDefault(); if (!forced) close(); });
   document.body.append(dlg);
   dlg.showModal();
 }
@@ -330,6 +341,8 @@ async function renderShell(user, profile) {
           h("span", null, `Signed in as ${loginName(user, profile)} · `,
             h("button", { type: "button", class: "btn-link footer-link", onClick: () => changePassword(user) }, "Change password"))))));
   show();
+  // signed in with a password the owner gave them: ask them to pick their own (once per sign-in)
+  if (profile.tempPassword && !askedNewPassword) { askedNewPassword = true; changePassword(user, { forced: true }); }
 }
 
 // ---------- Boot ----------
@@ -339,7 +352,7 @@ if (!isConfigured) {
 } else {
   onAuthStateChanged(auth, (user) => {
     if (profileUnsub) { profileUnsub(); profileUnsub = null; }
-    if (!user) return signingUp ? null : renderAuth();
+    if (!user) { askedNewPassword = false; return signingUp ? null : renderAuth(); }
     renderNoProfile(user);
     let lastKey = "";
     // Wait for the server-confirmed profile: right after sign-up the local copy exists a moment

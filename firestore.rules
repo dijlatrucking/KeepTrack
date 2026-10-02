@@ -48,7 +48,8 @@ service cloud.firestore {
     match /users/{uid} {
       allow read: if signedIn() && (request.auth.uid == uid || isOwner()
         || manages(resource.data.get('carrierId', '')));
-      allow create: if (signedIn() && request.auth.uid == uid && (
+      // The owner may add anyone (their login is made first, then the owner saves the profile).
+      allow create: if isOwner() || (signedIn() && request.auth.uid == uid && (
            // Invite code: role and carrier come from the invite.
            (request.resource.data.keys().hasOnly(['name', 'email', 'username', 'phone', 'role', 'carrierId', 'invite', 'createdAt'])
             && loginMatches(request.resource.data)
@@ -64,7 +65,9 @@ service cloud.firestore {
             && (isOwner() || isCarrierAdmin(request.resource.data.carrierId))
             && request.resource.data.keys().hasOnly(['role', 'manual', 'carrierId', 'name', 'phone', 'payType', 'payRate', 'truckId', 'truckUnit', 'createdAt']));
       allow update: if isOwner()
-        || (request.auth.uid == uid && onlyChanges(['name', 'phone']))
+        // people change their own name/phone, and clear "pick your own password" once they have
+        || (request.auth.uid == uid && onlyChanges(['name', 'phone', 'tempPassword'])
+            && request.resource.data.get('tempPassword', false) == false)
         || (resource.data.role == 'driver' && isCarrierAdmin(resource.data.get('carrierId', ''))
             && onlyChanges(['name', 'phone', 'payType', 'payRate', 'truckId', 'truckUnit', 'active']));
       allow delete: if isOwner()

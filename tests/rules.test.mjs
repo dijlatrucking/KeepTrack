@@ -124,6 +124,15 @@ await deny("request access claiming someone else's username", () => setDoc(doc(a
 await deny("an email account claiming a username", () => setDoc(doc(asLogin("u3", "real@gmail.com"), "users/u3"), { name: "x", username: "boss", phone: "1", role: "pending", requestedRole: "dispatcher", createdAt: new Date() }));
 await deny("a username that isn't text", () => setDoc(doc(asLogin("u4", "x" + UD), "users/u4"), { name: "x", username: 5, phone: "1", role: "pending", requestedRole: "dispatcher", createdAt: new Date() }));
 await deny("user renames their own username afterwards", () => updateDoc(doc(asLogin("u1", "acme.trucking" + UD), "users/u1"), { username: "owner" }));
+// the owner adds people directly (their login is made in a second session, then the owner saves the profile)
+await allow("owner adds a driver with a login", () => setDoc(doc(as("owner"), "users/added1"), { name: "Nina", username: "nina", phone: "1", role: "driver", carrierId: "A", tempPassword: true, addedBy: "owner", createdAt: new Date() }));
+await allow("owner adds a dispatcher with carriers", () => setDoc(doc(as("owner"), "users/added2"), { name: "Dex", username: "dex", role: "dispatcher", allCarriers: false, assignedCarriers: ["A"], tempPassword: true, addedBy: "owner" }));
+await deny("carrier admin adds someone with a login (not theirs to make)", () => setDoc(doc(as("adminA"), "users/added3"), { name: "x", username: "x", role: "driver", carrierId: "A" }));
+await deny("dispatcher adds someone", () => setDoc(doc(as("dispA"), "users/added4"), { name: "x", username: "x", role: "driver", carrierId: "A" }));
+await deny("someone signs themselves up as a dispatcher without an invite", () => setDoc(doc(asLogin("added5", "sneak" + UD), "users/added5"), { name: "x", username: "sneak", role: "dispatcher" }));
+await allow("person clears 'pick your own password' after picking one", () => updateDoc(doc(asLogin("added1", "nina" + UD), "users/added1"), { tempPassword: false }));
+await deny("person turns 'pick your own password' back on for themselves", () => updateDoc(doc(asLogin("added1", "nina" + UD), "users/added1"), { tempPassword: true }));
+await deny("person changes their own role while clearing the flag", () => updateDoc(doc(asLogin("added1", "nina" + UD), "users/added1"), { tempPassword: false, role: "owner" }));
 {
   const db = as("new7");
   const b = writeBatch(db);

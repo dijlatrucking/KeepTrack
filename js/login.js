@@ -21,3 +21,16 @@ export function loginName(user, profile) {
   return isUsernameLogin(e) ? e.split("@")[0] : e;
 }
 export const personLabel = (u) => (u && (u.name || u.username || u.email)) || "";
+
+// A starting password that's easy to read out or text: a word, four digits, a word ("diesel-4821-ridge").
+const WORDS = ["diesel", "ridge", "canyon", "harbor", "summit", "river", "prairie", "mesa", "timber", "granite", "cedar", "falcon", "bison", "willow", "copper", "orchard", "atlas", "comet", "meadow", "pine"];
+export function suggestPassword() {
+  const r = crypto.getRandomValues(new Uint32Array(3));
+  return `${WORDS[r[0] % WORDS.length]}-${String(1000 + (r[1] % 9000))}-${WORDS[r[2] % WORDS.length]}`;
+}
+
+// What to send someone so they can sign in.
+export function loginMessage(name, username, password) {
+  const site = location.origin + location.pathname.replace(/[^/]*$/, "");
+  return `${name ? "Hi " + name.split(" ")[0] + ", here's your KeepTrack login.\n" : "Your KeepTrack login:\n"}Site: ${site}\nUsername: ${username}\nPassword: ${password}`;
+}

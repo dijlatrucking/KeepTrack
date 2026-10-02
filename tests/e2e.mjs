@@ -30,6 +30,7 @@ writeFileSync(fbPath, readFileSync(fbPath, "utf8") + `
 import { connectAuthEmulator as __cae } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import { connectFirestoreEmulator as __cfe } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 __cae(auth, "http://127.0.0.1:9099", { disableWarnings: true });
+authHooks.push((a) => __cae(a, "http://127.0.0.1:9099", { disableWarnings: true }));
 __cfe(db, "127.0.0.1", 8080);
 `);
 const server = spawn("python3", ["-m", "http.server", String(PORT), "--directory", SITE], { stdio: "ignore" });
@@ -78,6 +79,20 @@ const driveServer = http.createServer(async (req, res) => {
   const who = await (await fetch(`http://127.0.0.1:9099/identitytoolkit.googleapis.com/v1/accounts:lookup?key=fake`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ idToken: b.idToken }) })).json();
   if (!who.users) { driveCalls.push({ docId: b.docId, ok: false, why: "token" }); return send({ ok: false, error: "not signed in" }); }
   const uid = who.users[0].localId;
+  // password resets: same owner check as the real script, then the emulator's admin API (as the real one uses Google's)
+  if (b.resetPassword || b.checkAdmin) {
+    const me = await fsGet("users/" + uid, b.idToken);
+    if (!me || me.role !== "owner") { driveCalls.push({ ok: false, why: "not owner", reset: true }); return send({ ok: false, error: "only the owner can do that" }); }
+    const admin = (method, payload) => fetch(`http://127.0.0.1:9099/identitytoolkit.googleapis.com/v1/projects/${PROJECT}/${method}`, {
+      method: "POST", headers: { "content-type": "application/json", Authorization: "Bearer owner" }, body: JSON.stringify(payload) });
+    if (b.checkAdmin) { const r = await admin("accounts:lookup", { localId: [uid] }); return send(r.ok ? { ok: true, account: "test-owner@gmail.com" } : { ok: false, error: "admin check failed" }); }
+    const t = b.resetPassword || {};
+    if (!t.uid || String(t.password || "").length < 6) return send({ ok: false, error: "The new password needs at least 6 characters." });
+    if (!(await fsGet("users/" + t.uid, b.idToken))) return send({ ok: false, error: "That person isn't a KeepTrack account." });
+    const r = await admin("accounts:update", { localId: t.uid, password: t.password });
+    driveCalls.push({ ok: r.ok, reset: t.uid });
+    return send(r.ok ? { ok: true } : { ok: false, error: "reset failed " + r.status });
+  }
   if (b.backup || b.verify || b.savePdf) {
     const me = await fsGet("users/" + uid, b.idToken);
     if (!me || me.role !== "owner") { driveCalls.push({ ok: false, why: "not owner", backup: !!b.backup }); return send({ ok: false, error: "only the owner can do that" }); }
@@ -178,7 +193,7 @@ async function open(who, viewport = { width: 1280, height: 900 }) {
   p.on("pageerror", (e) => problems.push(`[${who}] page error: ${e.message}`));
   p.on("console", (m) => {
     // people who are supposed to be turned away get 400/403 answers from sign-in; that's the point
-    const expected = (["intruder", "denied", "copycat"].includes(who) || expectAuthFail.has(who)) && /status of 40[03]/.test(m.text());
+    const expected = (["intruder", "denied", "copycat", "nina"].includes(who) || expectAuthFail.has(who)) && /status of 40[03]/.test(m.text());
     if (m.type() === "error" && !expected && !/favicon|ERR_FAILED.*fonts/.test(m.text())) problems.push(`[${who}] console: ${m.text().slice(0, 200)}`);
     if (/^\[dupe\]/.test(m.text())) console.log(`      [${who}] ${m.text().slice(0, 200)}`);
   });
@@ -822,8 +837,113 @@ await run("Owner sees every carrier or picks one: Summary, Expenses, Accounts", 
   await owner.locator(".item", { hasText: "$461.77" }).first().waitFor();
   await nav(owner, "Accounts");
   await owner.getByLabel("Role", { exact: true }).selectOption("driver");
-  await owner.locator("tr", { hasText: "Drew Driver" }).waitFor();
-  if (await owner.locator("tr", { hasText: "Carla Carrier" }).count()) throw new Error("Role filter didn't filter");
+  await owner.locator(".acct-row", { hasText: "Drew Driver" }).waitFor();
+  if (await owner.locator(".acct-row", { hasText: "Carla Carrier" }).count()) throw new Error("Role filter didn't filter");
+  await owner.getByLabel("Role", { exact: true }).selectOption("all");
+});
+
+// ---------- 5b. The owner adds people and resets passwords ----------
+let ninaStart = "";
+await run("Owner adds a driver with a username and starting password, without being signed out", async () => {
+  await nav(owner, "Accounts");
+  await owner.getByRole("button", { name: "+ Add a person" }).click();
+  const F = owner.locator(".card", { has: owner.getByRole("heading", { name: "Add a person" }) });
+  await F.locator("select[name=role]").selectOption("driver");
+  await F.locator("select[name=carrierId]").selectOption({ label: "Test Carrier A" });
+  await F.getByLabel("Full name").fill("Nina New");
+  await F.getByLabel("Phone").fill("2085550177");
+  await F.getByLabel("Username").fill("Nina.New");
+  ninaStart = await F.locator("input[name=password]").inputValue();
+  if (!/^[a-z]+-\d{4}-[a-z]+$/.test(ninaStart)) throw new Error("No starting password suggested: " + ninaStart);
+  await F.getByRole("button", { name: "Add person" }).click();
+  await toast(owner, "Nina New can sign in now");
+  const share = owner.locator(".share-card");
+  await share.getByText("Username: nina.new").waitFor();
+  await share.getByText("Password: " + ninaStart).waitFor();
+  await share.getByRole("link", { name: "Text it" }).waitFor();
+  // the owner is still the owner
+  await owner.getByText("Signed in as owner@test.dev").waitFor();
+  await owner.locator(".acct-row", { hasText: "Nina New" }).getByText("Picks own password at next sign-in").waitFor();
+  const p = (await adminDocs("users")).find((u) => u.username === "nina.new");
+  if (!p || p.role !== "driver" || !p.carrierId || !p.tempPassword) throw new Error("Profile not saved right: " + JSON.stringify(p));
+});
+
+await run("A taken username is refused when adding, and no stray login is left behind", async () => {
+  await owner.getByRole("button", { name: "+ Add a person" }).click();
+  const F = owner.locator(".card", { has: owner.getByRole("heading", { name: "Add a person" }) });
+  await F.locator("select[name=carrierId]").selectOption({ label: "Test Carrier A" });
+  await F.getByLabel("Full name").fill("Someone Else");
+  await F.getByLabel("Username").fill("drew");
+  await F.getByRole("button", { name: "Add person" }).click();
+  await F.locator(".form-error", { hasText: "That username is already taken" }).waitFor();
+  await F.getByRole("button", { name: "Cancel" }).click();
+  if ((await adminDocs("users")).some((u) => u.name === "Someone Else")) throw new Error("A profile was saved anyway");
+});
+
+let nina;
+await run("Nina signs in with what the owner sent and is asked to pick her own password first", async () => {
+  nina = await open("nina", { width: 390, height: 844 });
+  await nina.getByLabel("Username").fill("nina.new");
+  await nina.getByLabel("Password").fill(ninaStart);
+  await nina.getByRole("button", { name: "Sign in" }).click();
+  const dlg = nina.locator("dialog[open]");
+  await dlg.getByRole("heading", { name: "Pick your own password" }).waitFor();
+  if (await dlg.locator('input[name="current"]').count()) throw new Error("Shouldn't ask for the password she just typed");
+  await dlg.locator('input[name="next"]').fill(ninaStart);
+  await dlg.locator('input[name="again"]').fill(ninaStart);
+  await dlg.getByRole("button", { name: "Save and continue" }).click();
+  await dlg.getByText("Pick a password different").waitFor();
+  await dlg.locator('input[name="next"]').fill("nina-own-77");
+  await dlg.locator('input[name="again"]').fill("nina-own-77");
+  await dlg.getByRole("button", { name: "Save and continue" }).click();
+  await toast(nina, "You're all set");
+  await heading(nina, "Loads");
+  const t0 = Date.now();
+  while ((await adminDocs("users")).find((u) => u.username === "nina.new").tempPassword && Date.now() - t0 < 10000) await new Promise((r) => setTimeout(r, 200));
+  if ((await adminDocs("users")).find((u) => u.username === "nina.new").tempPassword) throw new Error("Flag not cleared");
+});
+
+await run("Owner checks password resets are set up, then resets Nina's password", async () => {
+  await nav(owner, "Settings");
+  const R = owner.locator(".card", { hasText: "Password resets" });
+  await R.getByRole("button", { name: "Check" }).click();
+  await R.getByText(/^Ready\./).waitFor();
+  await nav(owner, "Accounts");
+  await owner.locator(".acct-row", { hasText: "Nina New" }).getByRole("button", { name: "Reset password" }).click();
+  const dlg = owner.locator("dialog[open]");
+  await dlg.locator("input[name=password]").fill("reset-5678");
+  await dlg.locator("input[name=temp]").uncheck();
+  await dlg.getByRole("button", { name: "Reset password" }).click();
+  await toast(owner, "New password set for Nina New");
+  await owner.locator(".share-card").getByText("Password: reset-5678").waitFor();
+  if (await owner.locator(".acct-row", { hasText: "Nina New" }).getByText("Picks own password").count()) throw new Error("Shouldn't ask her to pick one this time");
+});
+
+await run("Nina's old password stops working and the new one works", async () => {
+  expectAuthFail.add("nina");
+  const menu = nina.locator(".menu-btn");
+  if (await menu.isVisible()) await menu.click();
+  await nina.getByRole("button", { name: "Sign out" }).click();
+  await nina.getByLabel("Username").fill("nina.new");
+  await nina.getByLabel("Password").fill("nina-own-77");
+  await nina.getByRole("button", { name: "Sign in" }).click();
+  await nina.locator(".form-error", { hasText: "Wrong username or password" }).waitFor();
+  await nina.getByLabel("Password").fill("reset-5678");
+  await nina.getByRole("button", { name: "Sign in" }).click();
+  await heading(nina, "Loads");
+  await nina.waitForTimeout(500);
+  if (await nina.locator("dialog[open]").count()) throw new Error("Asked to pick a password even though the owner said not to");
+  await nina.context().close();
+  delete pages.nina;
+});
+
+await run("Nobody but the owner can reset a password through the Drive script", async () => {
+  const r = await carrier.evaluate(async () => {
+    const { auth } = await import("./js/fb.js");
+    const res = await fetch("http://127.0.0.1:5066/", { method: "POST", headers: { "Content-Type": "text/plain" }, body: JSON.stringify({ idToken: await auth.currentUser.getIdToken(), resetPassword: { uid: auth.currentUser.uid, password: "hijack-1" } }) });
+    return res.json();
+  });
+  if (r.ok) throw new Error("A carrier admin reset a password");
 });
 
 // ---------- 6. Lane request round trip ----------

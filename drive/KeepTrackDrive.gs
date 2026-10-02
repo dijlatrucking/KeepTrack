@@ -6,12 +6,15 @@
 // Updating later: paste the new version, save, then Deploy → Manage deployments → edit (pencil)
 // → Version: New version → Deploy. The URL stays the same.
 //
+// Password resets (optional): also paste the settings file (appsscript.json) from KeepTrack → Settings →
+// Password resets, run "authorize" once, and add this Google account to the Firebase project as an Editor.
+//
 // How it stays safe:
 // - KeepTrack sends only the signed-in user's Firebase ID token and document ids (and, for the owner,
 //   the backup report PDF).
 // - This script checks the token with Firebase, then reads each document and its scan from Firestore
 //   *as that user*, so KeepTrack's security rules decide what they're allowed to send or open.
-// - Backups, backup reports and "free up space" checks only run for the KeepTrack owner.
+// - Backups, backup reports, "free up space" checks and password resets only run for the KeepTrack owner.
 // - Files land in your Drive under KeepTrack/<Carrier>/...; nobody else gets Drive access.
 //
 // Where files go:
@@ -52,6 +55,23 @@ function doPost(e) {
       }
       const carriers = {};
       return reply({ ok: true, results: ids.map(function (id) { return copyOne(id, body.idToken, carriers); }) });
+    }
+
+    // 2b) Owner-only: set a new password for someone, or check that password resets are set up.
+    if (body.resetPassword || body.checkAdmin) {
+      const me = firestoreGet("users/" + uid, body.idToken);
+      if (!me || me.role !== "owner") return reply({ ok: false, error: "only the owner can do that" });
+      if (body.checkAdmin) {
+        const c = adminAuth("accounts:lookup", { localId: [uid] });
+        return reply(c.ok ? { ok: true, account: scriptAccount() } : { ok: false, error: c.error, account: scriptAccount() });
+      }
+      const target = body.resetPassword || {};
+      const id = String(target.uid || ""), pw = String(target.password || "");
+      if (!id || pw.length < 6) return reply({ ok: false, error: "The new password needs at least 6 characters." });
+      // only KeepTrack accounts (the owner can read every profile)
+      if (!firestoreGet("users/" + id, body.idToken)) return reply({ ok: false, error: "That person isn't a KeepTrack account." });
+      const r = adminAuth("accounts:update", { localId: id, password: pw });
+      return reply(r.ok ? { ok: true } : { ok: false, error: r.error });
     }
 
     if (!body.docId) return reply({ ok: false, error: "missing document" });
@@ -322,6 +342,48 @@ function saveReport(name, data) {
   const f = folder.createFile(Utilities.newBlob(bytes, "application/pdf", title));
   f.setDescription("KeepTrack backup report");
   return { ok: true, url: f.getUrl(), fileId: f.getId() };
+}
+
+// ---------- logins (password resets) ----------
+
+// Calls Google's admin API for KeepTrack's logins with this Google account's own access
+// (needs the identitytoolkit permission in appsscript.json and Editor access to the Firebase project).
+function adminAuth(method, payload) {
+  let token = "";
+  try { token = ScriptApp.getOAuthToken(); } catch (e) { return { ok: false, error: SETUP_SCOPES }; }
+  const res = UrlFetchApp.fetch("https://identitytoolkit.googleapis.com/v1/projects/" + PROJECT_ID + "/" + method, {
+    method: "post", contentType: "application/json", payload: JSON.stringify(payload), muteHttpExceptions: true,
+    headers: { Authorization: "Bearer " + token, "X-Goog-User-Project": PROJECT_ID },
+  });
+  const code = res.getResponseCode();
+  let j = {};
+  try { j = JSON.parse(res.getContentText() || "{}"); } catch (e) { j = {}; }
+  if (code < 300) return { ok: true, data: j };
+  const err = j.error || {};
+  const why = String(err.message || "") + " " + String(err.status || "") + " " + JSON.stringify(err.details || []);
+  if (/insufficient.*scope|SCOPE_INSUFFICIENT|insufficientPermissions/i.test(why)) return { ok: false, error: SETUP_SCOPES };
+  if (code === 401 || code === 403 || /PERMISSION_DENIED|USER_PROJECT_DENIED|serviceusage|does not have/i.test(why)) {
+    return { ok: false, error: "The Google account running the Drive script (" + scriptAccount() + ") isn't allowed to manage KeepTrack logins yet. In the Firebase console → Project settings → Users and permissions, add it as an Editor, then try again." };
+  }
+  if (/USER_NOT_FOUND/.test(why)) return { ok: false, error: "That login wasn't found. They may need to be added again." };
+  if (/WEAK_PASSWORD/.test(why)) return { ok: false, error: "That password is too weak. Use at least 6 characters." };
+  return { ok: false, error: "Google said: " + (String(err.message || "").trim() || "error " + code) };
+}
+
+const SETUP_SCOPES = "The Drive script needs one more permission. In Apps Script, paste the settings file (appsscript.json) from KeepTrack → Settings → Password resets, run \"authorize\" once, then deploy a new version.";
+
+function scriptAccount() {
+  try { return Session.getEffectiveUser().getEmail() || "the script's Google account"; }
+  catch (e) { return "the script's Google account"; }
+}
+
+// Run this once from the Apps Script editor after pasting the settings file, so Google asks for the
+// new permission. It doesn't change anything.
+function authorize() {
+  const who = scriptAccount();
+  const root = rootFolder().getName();
+  ScriptApp.getOAuthToken();
+  return "OK: " + who + " · Drive folder " + root;
 }
 
 // ---------- helpers ----------

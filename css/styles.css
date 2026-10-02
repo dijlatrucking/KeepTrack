@@ -296,3 +296,11 @@ details.stub summary { display: flex; justify-content: space-between; gap: 12px;
 .paystub-net:empty { display: none; }
 .paystub-net { margin: 0; font-size: 15px; }
 .footer-link { font-size: inherit; min-height: 0; padding: 0; text-decoration: underline; }
+
+/* Login details to send someone */
+.card-ok { border-color: var(--ok); }
+.share-text { margin: 0; padding: 12px 14px; background: var(--ground); border-radius: 10px; font-family: var(--mono); font-size: 13.5px; white-space: pre-wrap; overflow-wrap: anywhere; user-select: all; }
+.acct-row { align-items: flex-start; }
+.acct-row .grow { min-width: 0; flex: 1 1 220px; }
+.acct-row .strong .pill { margin-left: 2px; vertical-align: 1px; }
+.step-btn { margin-top: 8px; }

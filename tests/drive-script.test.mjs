@@ -59,8 +59,23 @@ const toFields = (o) => Object.fromEntries(Object.entries(o).map(([k, v]) => [k,
   v === null ? { nullValue: null } : typeof v === "boolean" ? { booleanValue: v } : Number.isInteger(v) ? { integerValue: String(v) }
     : typeof v === "number" ? { doubleValue: v } : /^\d{4}-\d\d-\d\dT/.test(v) ? { timestampValue: v } : { stringValue: v }]));
 const res = (code, body) => ({ getResponseCode: () => code, getContentText: () => JSON.stringify(body) });
+// Google's admin API for logins, as the script's Google account sees it.
+const passwords = {}; // uid -> password set through the admin API
+let adminMode = "ok"; // "ok" | "noScope" | "denied"
+const adminCalls = [];
 const UrlFetchApp = {
   fetch(url, opts) {
+    if (url.includes("identitytoolkit.googleapis.com/v1/projects/")) {
+      adminCalls.push({ url, headers: opts.headers, body: JSON.parse(opts.payload) });
+      if (opts.headers.Authorization !== "Bearer google-oauth-token") return res(401, { error: { message: "no token", status: "UNAUTHENTICATED" } });
+      if (opts.headers["X-Goog-User-Project"] !== "keeptrack-6426e") return res(403, { error: { message: "Identity Toolkit API has not been used in project 1234 before or it is disabled.", status: "PERMISSION_DENIED" } });
+      if (adminMode === "noScope") return res(403, { error: { message: "Request had insufficient authentication scopes.", status: "PERMISSION_DENIED", details: [{ reason: "ACCESS_TOKEN_SCOPE_INSUFFICIENT" }] } });
+      if (adminMode === "denied") return res(403, { error: { message: "The caller does not have permission", status: "PERMISSION_DENIED" } });
+      const body = JSON.parse(opts.payload);
+      if (url.endsWith("accounts:update")) { passwords[body.localId] = body.password; return res(200, { localId: body.localId }); }
+      if (url.endsWith("accounts:lookup")) return res(200, { users: body.localId.map((id) => ({ localId: id })) });
+      return res(404, {});
+    }
     if (url.includes("accounts:lookup")) {
       const uid = users[JSON.parse(opts.payload).idToken];
       return uid ? res(200, { users: [{ localId: uid }] }) : res(400, { error: "bad token" });
@@ -76,13 +91,14 @@ const UrlFetchApp = {
 const ctx = vm.createContext({
   DriveApp, UrlFetchApp,
   LockService: { getScriptLock: () => ({ waitLock() {}, releaseLock() {} }) },
+  ScriptApp: { getOAuthToken: () => "google-oauth-token" },
+  Session: { getScriptTimeZone: () => "America/Boise", getEffectiveUser: () => ({ getEmail: () => "bakrabd2@gmail.com" }) },
   Utilities: {
     newBlob: (bytes, type, name) => blobOf(bytes, type, name),
     base64Decode: (s) => Buffer.from(s, "base64"),
     base64Encode: (b) => Buffer.from(b).toString("base64"),
     formatDate: (d, tz) => new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" }).format(d),
   },
-  Session: { getScriptTimeZone: () => "America/Boise" },
   ContentService: { createTextOutput: (s) => ({ s, setMimeType() { return this; } }), MimeType: { JSON: "json" } },
   JSON, Object, String, Number, Date, Error, Math, RegExp,
 });
@@ -391,6 +407,47 @@ check("Stress: after freeing space, 100 scans still open from Drive byte-for-byt
     const r = call({ idToken: "tok-owner", docId: id, fetch: true });
     if (!r.ok || r.data !== before) throw new Error(id + " didn't come back intact");
   }
+});
+
+check("Password reset: owner only, sets the new password through Google's admin API", () => {
+  eq(call({ idToken: "tok-disp", resetPassword: { uid: "drv1", password: "newpass-1" } }).ok, false, "dispatcher refused");
+  eq(call({ idToken: "tok-driver", resetPassword: { uid: "drv1", password: "newpass-1" } }).ok, false, "driver refused");
+  eq(call({ idToken: "tok-owner", resetPassword: { uid: "drv1", password: "short" } }).ok, false, "too short");
+  eq(call({ idToken: "tok-owner", resetPassword: { uid: "ghost", password: "newpass-1" } }).ok, false, "not a KeepTrack account");
+  eq(passwords.drv1, undefined, "nothing changed yet");
+  const r = call({ idToken: "tok-owner", resetPassword: { uid: "drv1", password: "newpass-1" } });
+  eq(r.ok, true, "reset");
+  eq(passwords.drv1, "newpass-1", "password set");
+  const last = adminCalls[adminCalls.length - 1];
+  eq(last.url, "https://identitytoolkit.googleapis.com/v1/projects/keeptrack-6426e/accounts:update", "admin endpoint");
+  eq(last.headers["X-Goog-User-Project"], "keeptrack-6426e", "billed to the Firebase project");
+});
+
+check("Password reset check: says Ready, or exactly which setup step is missing", () => {
+  const ok = call({ idToken: "tok-owner", checkAdmin: true });
+  eq(ok.ok, true, "ready");
+  eq(ok.account, "bakrabd2@gmail.com", "which Google account runs it");
+  eq(call({ idToken: "tok-disp", checkAdmin: true }).ok, false, "owner only");
+  adminMode = "noScope";
+  const a = call({ idToken: "tok-owner", checkAdmin: true });
+  if (!/settings file \(appsscript\.json\)/.test(a.error)) throw new Error("Should point to the settings file: " + a.error);
+  adminMode = "denied";
+  const b = call({ idToken: "tok-owner", resetPassword: { uid: "drv1", password: "another-1" } });
+  if (!/bakrabd2@gmail\.com.*Editor/.test(b.error)) throw new Error("Should say to add the account as an Editor: " + b.error);
+  eq(passwords.drv1, "newpass-1", "unchanged when refused");
+  adminMode = "ok";
+  eq(typeof ctx.authorize, "function", "authorize() exists for the one-time permission prompt");
+  if (!/^OK: bakrabd2@gmail\.com/.test(ctx.authorize())) throw new Error("authorize() should report OK");
+});
+
+check("The settings file is valid and asks for exactly what the script uses", () => {
+  const m = JSON.parse(readFileSync(new URL("../drive/appsscript.json", import.meta.url), "utf8"));
+  eq(m.runtimeVersion, "V8", "runtime");
+  for (const sc of ["https://www.googleapis.com/auth/drive", "https://www.googleapis.com/auth/script.external_request", "https://www.googleapis.com/auth/identitytoolkit", "https://www.googleapis.com/auth/userinfo.email"])
+    if (!m.oauthScopes.includes(sc)) throw new Error("missing scope " + sc);
+  eq(m.webapp.executeAs, "USER_DEPLOYING", "runs as the owner");
+  eq(m.webapp.access, "ANYONE_ANONYMOUS", "reachable by KeepTrack");
+  if (SRC.includes("SpreadsheetApp")) throw new Error("Script uses Sheets but the settings file doesn't allow it");
 });
 
 check("The script has nothing a phone paste would mangle (no /* comments)", () => {

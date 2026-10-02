@@ -7,6 +7,7 @@ import { driveUrl, forgetDriveUrl, pingDrive, sendToDrive } from "../drive.js";
 import { storageCard, storageAlert } from "../storage.js";
 import { docActions } from "../editing.js";
 import { personLabel } from "../login.js";
+import { addPersonForm, resetPasswordDialog, shareCard, checkResets } from "../accounts.js";
 import { people as carrierPeople, paystubs as carrierPaystubs } from "./carrier.js";
 
 const allIds = (ctx) => ctx.carriers.map((c) => c.id);
@@ -278,6 +279,23 @@ function accountsView(ctx, root) {
     editSlot.scrollIntoView({ block: "start", behavior: "smooth" });
   };
 
+  const shareSlot = h("div");
+  const showShare = (r, title) => {
+    shareSlot.replaceChildren(shareCard(r.person, r.username, r.password, { title, temp: r.temp }));
+    shareSlot.scrollIntoView({ block: "start", behavior: "smooth" });
+  };
+  const openAdd = () => {
+    shareSlot.replaceChildren();
+    editSlot.replaceChildren(card("Add a person", null,
+      h("p", { class: "muted small" }, "Makes their login right now. You'll get the username and password to send them."),
+      addPersonForm(ctx, {
+        onDone: (r) => { editSlot.replaceChildren(); showShare(r, "Login ready"); },
+        onCancel: () => editSlot.replaceChildren(),
+      })));
+    editSlot.scrollIntoView({ block: "start", behavior: "smooth" });
+  };
+  const hasLogin = (u) => !u.manual && (u.username || u.email);
+
   const draw = () => {
     const counts = {};
     users.forEach((u) => (counts[u.role] = (counts[u.role] || 0) + 1));
@@ -285,19 +303,23 @@ function accountsView(ctx, root) {
     const shown = users.filter((u) => (roleF === "all" || u.role === roleF) && (carrierF === "all" || (carrierF === "none" ? !u.carrierId : u.carrierId === carrierF)) &&
       (!q || [u.name, u.username, u.email, u.phone, u.company].filter(Boolean).join(" ").toLowerCase().includes(q)))
       .sort((a, b) => personLabel(a).localeCompare(personLabel(b)));
-    body.replaceChildren(table([
-      { label: "Name", cell: (u) => h("div", null, h("div", { class: "strong" }, u.name || "—"), h("div", { class: "muted small" }, u.username ? "Username: " + u.username : u.email || (u.manual ? "No app login (added by hand)" : ""))) },
-      { label: "Role", cell: (u) => pill(u.role === "pending" ? "pending" : "x", ROLE_LABEL[u.role] || u.role) },
-      { label: "Carrier", cell: (u) => (u.carrierId ? ctx.carrierName(u.carrierId) : u.role === "dispatcher" ? (u.allCarriers ? "All carriers" : `${(u.assignedCarriers || []).length} assigned`) : u.company || "—") },
-      { label: "Phone", cell: (u) => (u.phone ? h("a", { href: "tel:" + u.phone }, u.phone) : "—") },
-      { label: "Joined", cell: (u) => ago(u.createdAt) },
-      { label: "", cell: (u) => u.role === "pending" ? h("span", { class: "muted small" }, "See Access requests") : h("div", { class: "row-meta" },
-        btn("Edit", () => edit(u), "ghost"),
-        u.id !== ctx.uid ? btn("Remove", () => confirm(`Remove ${personLabel(u)}? They lose access right away.`) && guard(() => deleteDoc(doc(db, "users", u.id)), "Access removed"), "ghost") : null) },
-    ], shown, "No accounts match."));
+    // one row per person, so it fits a phone
+    body.replaceChildren(shown.length ? h("div", { class: "list" }, shown.map((u) => h("div", { class: "row acct-row" },
+      h("div", { class: "grow" },
+        h("div", { class: "strong" }, u.name || "—", " ", pill(u.role === "pending" ? "pending" : "x", ROLE_LABEL[u.role] || u.role),
+          u.tempPassword ? h("span", { class: "pill pill-warn tag" }, "Picks own password at next sign-in") : null),
+        h("div", { class: "muted small" }, [
+          u.username ? "Username: " + u.username : u.email || (u.manual ? "No app login (added by hand)" : ""),
+          u.carrierId ? ctx.carrierName(u.carrierId) : u.role === "dispatcher" ? (u.allCarriers ? "All carriers" : `${(u.assignedCarriers || []).length} carrier${(u.assignedCarriers || []).length === 1 ? "" : "s"}`) : u.company || null,
+          u.createdAt ? "joined " + ago(u.createdAt) : null].filter(Boolean).join(" · ")),
+        u.phone ? h("a", { class: "small", href: "tel:" + u.phone }, u.phone) : null),
+      u.role === "pending" ? h("span", { class: "muted small" }, "See Access requests") : h("div", { class: "row-meta" },
+        btn("Edit", () => edit(u), "ghost", { class: "btn btn-ghost btn-sm" }),
+        hasLogin(u) && u.id !== ctx.uid ? btn("Reset password", () => resetPasswordDialog(ctx, u, { onDone: (r) => showShare(r, "New password set") }), "ghost", { class: "btn btn-ghost btn-sm" }) : null,
+        u.id !== ctx.uid ? btn("Remove", () => confirm(`Remove ${personLabel(u)}? They lose access right away.`) && guard(() => deleteDoc(doc(db, "users", u.id)), "Access removed"), "ghost", { class: "btn btn-ghost btn-sm danger" }) : null)))) : h("p", { class: "empty" }, "No accounts match."));
   };
   ctx.sub(watch(collection(db, "users"), (r) => { users = r; draw(); }));
-  root.append(stats, editSlot, card("Accounts", null, h("div", { class: "form-grid" }, field("Search", search), field("Role", roleSel), field("Carrier", carrierSel)), body));
+  root.append(stats, shareSlot, editSlot, card("Accounts", btn("+ Add a person", openAdd, "primary"), h("div", { class: "form-grid" }, field("Search", search), field("Role", roleSel), field("Carrier", carrierSel)), body));
 }
 
 
@@ -342,7 +364,44 @@ function settingsView(ctx, root) {
       h("li", null, "Tap ", h("b", null, "Deploy → New deployment"), ", pick type ", h("b", null, "Web app"), ". Execute as: ", h("b", null, "Me"), ". Who has access: ", h("b", null, "Anyone"), ". Deploy, then allow access when Google asks."),
       h("li", null, "Copy the ", h("b", null, "Web app URL"), " and paste it here, then tap ", h("b", null, "Save and test"), ".")),
     copyScript, form,
-    h("p", { class: "muted small" }, "How files are filed: KeepTrack / Carrier / Loads / 2026-10 / “Oct 01 · 4471823 · Boise ID → Denver CO” holds everything for that load (rate con, BOL, POD, lumper), named like “2026-10-01 · BOL · 4471823”. Driver receipts with no load go to Carrier / Driver receipts / driver name. Insurance, W-9 and other company papers go to Carrier / Company. Backups holds a PDF report for each backup.")));
+    h("p", { class: "muted small" }, "How files are filed: KeepTrack / Carrier / Loads / 2026-10 / “Oct 01 · 4471823 · Boise ID → Denver CO” holds everything for that load (rate con, BOL, POD, lumper), named like “2026-10-01 · BOL · 4471823”. Driver receipts with no load go to Carrier / Driver receipts / driver name. Insurance, W-9 and other company papers go to Carrier / Company. Backups holds a PDF report for each backup.")),
+    resetsCard());
+}
+
+// Password resets run through the Drive script with the owner's Google admin rights (one-time setup).
+function resetsCard() {
+  const status = h("p", { class: "scanmsg", role: "status" }, "Tap Check to see if password resets are set up.");
+  const copyFile = (path, what) => btn(`Copy ${what}`, async () => {
+    try { await navigator.clipboard.writeText(await (await fetch(path + "?v=" + Date.now())).text()); toast(`${what[0].toUpperCase() + what.slice(1)} copied`, "ok"); }
+    catch (e) { window.open(path, "_blank"); }
+  }, "ghost");
+  const check = btn("Check", async () => {
+    status.textContent = "Checking…"; status.className = "scanmsg";
+    check.disabled = true;
+    try {
+      const r = await checkResets();
+      status.textContent = `Ready. Reset anyone's password from Accounts.${r.account ? " (Runs as " + r.account + ".)" : ""}`;
+      status.className = "scanmsg ok";
+    } catch (e) {
+      status.textContent = e.message;
+      status.className = "scanmsg bad";
+    }
+    check.disabled = false;
+  }, "dark");
+  return card("Password resets", null,
+    h("p", { class: "muted small" }, "Adding people works without this. Resetting a forgotten password needs Google admin rights over the logins, so it runs through your Drive script. One-time setup:"),
+    h("ol", { class: "steps-list" },
+      h("li", null, "In the ", h("a", { href: "https://console.firebase.google.com/project/keeptrack-6426e/settings/iam", target: "_blank", rel: "noopener" }, "Firebase console → Project settings → Users and permissions"),
+        ", tap ", h("b", null, "Add member"), ", enter the Google account your Drive script runs on (the one signed in at script.google.com), pick ", h("b", null, "Editor"), ", and add. Skip this if that account created the Firebase project."),
+      h("li", null, "In Apps Script, open ", h("b", null, "Project Settings"), " (gear on the left) and tick ", h("b", null, "Show “appsscript.json” manifest file in editor"), "."),
+      h("li", null, "Back in the editor, open ", h("b", null, "appsscript.json"), ", clear it and paste the settings file. Save.",
+        h("div", { class: "step-btn" }, copyFile("drive/appsscript.json", "the settings file"))),
+      h("li", null, "Open ", h("b", null, "Drive.gs"), ", clear it and paste the latest script (", h("b", null, "Copy the script"), " above). Save."),
+      h("li", null, "At the top, pick ", h("b", null, "authorize"), " in the function list and tap ", h("b", null, "Run"), ". Allow the new permission (managing KeepTrack logins)."),
+      h("li", null, h("b", null, "Deploy → Manage deployments"), " → pencil → Version: ", h("b", null, "New version"), " → Deploy. The link stays the same."),
+      h("li", null, "Tap ", h("b", null, "Check"), " here.")),
+    h("div", { class: "row-inline" }, check),
+    status);
 }
 
 export default [
