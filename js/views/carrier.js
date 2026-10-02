@@ -291,6 +291,16 @@ export { people, documents, paystubs };
 
 const mine = (ctx) => [ctx.profile.carrierId];
 
+// The menu: a few sections; a section with several pages shows them as tabs.
+export const sections = [
+  { label: "Summary", pages: ["summary"] },
+  { label: "Loads", pages: ["loads", "requests"] },
+  { label: "Money", pages: ["expenses", "paystubs", "tax"] },
+  { label: "Documents", pages: ["documents"] },
+  { label: "Drivers & trucks", pages: ["people"] },
+  { label: "Settings", pages: ["settings"] },
+];
+
 export default [
   { id: "summary", label: "Summary", render: (ctx, root) => summaryView(ctx, root, mine(ctx)) },
   { id: "loads", label: "Loads", render: (ctx, root) => loadsView(ctx, root, mine(ctx)) },

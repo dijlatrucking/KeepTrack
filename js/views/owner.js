@@ -405,6 +405,16 @@ function resetsCard() {
     status);
 }
 
+// The menu: a few sections; a section with several pages shows them as tabs.
+export const sections = [
+  { label: "Overview", pages: ["overview"] },
+  { label: "Loads", pages: ["loads", "requests"] },
+  { label: "Money", pages: ["summary", "expenses", "paystubs", "tax"] },
+  { label: "Documents", pages: ["documents"] },
+  { label: "People", pages: ["carriers", "people", "accounts", "team", "access"] },
+  { label: "Settings", pages: ["settings"] },
+];
+
 export default [
   { id: "overview", label: "Overview", render: overview },
   { id: "summary", label: "Summary", render: (ctx, root) => pickerPage(ctx, root, "summary", summaryView) },
@@ -417,7 +427,7 @@ export default [
   { id: "paystubs", label: "Paystubs", render: (ctx, root) => pickerPage(ctx, root, "paystubs", (sub, body) => carrierPaystubs(sub, body), { requireOne: true }) },
   { id: "carriers", label: "Carriers", render: carriersView },
   { id: "accounts", label: "Accounts", render: accountsView },
-  { id: "team", label: "Team", render: teamView },
+  { id: "team", label: "Dispatchers", render: teamView },
   { id: "access", label: "Access requests", render: (ctx, root) => root.append(accessRequests(ctx)) },
   { id: "settings", label: "Settings", render: settingsView },
 ];

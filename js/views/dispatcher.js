@@ -30,6 +30,13 @@ function tasks(ctx, root) {
     loadsTable(ctx, ids(ctx), { title: "My loads", showMoney: true, editable: true, onLoads: (r) => { loads = r; draw(); } }));
 }
 
+// The menu: a few sections; a section with several pages shows them as tabs.
+export const sections = [
+  { label: "Tasks", pages: ["tasks"] },
+  { label: "Loads", pages: ["loads", "requests"] },
+  { label: "Documents", pages: ["documents"] },
+];
+
 export default [
   { id: "tasks", label: "Tasks", render: tasks },
   { id: "loads", label: "Loads", render: (ctx, root) => pickerPage(ctx, root, "d-loads", loadsView) },

@@ -210,16 +210,28 @@ const lastReport = () => (backupPdfs.length ? backupPdfs[backupPdfs.length - 1].
 const inDriveNow = async () => (await adminDocs("documents")).filter((d) => d.driveFileId && d.status !== "rejected" && !d.fileCleared && !d.driveMissing).length;
 const reportSays = (n) => lastReport().includes(n ? `${n} scan${n === 1 ? "" : "s"} backed up in Google Drive` : "Nothing from KeepTrack is backed up in Google Drive right now");
 const heading = (p, name) => p.getByRole("heading", { name, exact: true }).first().waitFor();
+// Opens a page by its name: a main-menu section, or a tab inside one (open the section, then the tab).
 const nav = async (p, label) => {
-  const menu = p.locator(".menu-btn");
-  if (await menu.isVisible()) { if ((await menu.getAttribute("aria-expanded")) !== "true") await menu.click(); }
-  const link = p.locator("nav.site-nav a", { hasText: label }).first();
-  const href = await link.getAttribute("href");
-  // The page redraws on the hashchange that follows the click; wait for it so nothing is typed into the old page.
-  const changes = await p.evaluate((h) => location.hash !== h, href);
-  if (changes) await p.evaluate(() => document.querySelector("#content .view")?.setAttribute("data-old", "1"));
-  await link.click();
-  if (changes) await p.waitForFunction(() => !document.querySelector("#content .view[data-old]"));
+  const where = await p.evaluate((label) => {
+    const links = [...document.querySelectorAll("nav.site-nav a")];
+    const sec = links.find((a) => (a.dataset.pages || "").split("|").includes(label)) || links.find((a) => a.textContent.trim() === label);
+    return sec ? { section: sec.textContent.trim(), tabbed: (sec.dataset.pages || "").split("|").length > 1, here: sec.classList.contains("on") } : null;
+  }, label);
+  if (!where) throw new Error(`No page called "${label}" in the menu`);
+  // The page redraws on the hashchange that follows a click; wait for it so nothing is typed into the old page.
+  const go = async (link) => {
+    const href = await link.getAttribute("href");
+    const changes = await p.evaluate((h) => location.hash !== h, href);
+    if (changes) await p.evaluate(() => document.querySelector("#content .view")?.setAttribute("data-old", "1"));
+    await link.click();
+    if (changes) await p.waitForFunction(() => !document.querySelector("#content .view[data-old]"));
+  };
+  if (!(where.here && where.tabbed)) {
+    const menu = p.locator(".menu-btn");
+    if (await menu.isVisible()) { if ((await menu.getAttribute("aria-expanded")) !== "true") await menu.click(); }
+    await go(p.locator("nav.site-nav").getByRole("link", { name: where.section, exact: true }));
+  }
+  if (where.tabbed) await go(p.locator(".page-tabs").getByRole("link", { name: label, exact: true }));
 };
 const overflow = async (p) => p.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
 const home = async (p) => { await p.evaluate(() => history.replaceState(null, "", location.pathname)); await p.reload(); };
@@ -323,7 +335,7 @@ await run("Owner approves the dispatcher and gives them Test Carrier A", async (
   const row = owner.locator(".row", { hasText: "Dana Dispatch" }).first();
   await row.getByRole("button", { name: "Approve dispatcher" }).click();
   await toast(owner, "Approved");
-  await nav(owner, "Team");
+  await nav(owner, "Dispatchers");
   const trow = owner.locator(".row", { hasText: "Dana Dispatch" }).first();
   await trow.getByLabel("Test Carrier A").check();
   await trow.getByRole("button", { name: "Save access" }).click();

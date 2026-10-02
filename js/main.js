@@ -6,17 +6,27 @@ import {
 import { loginEmail, cleanUsername, USERNAME_RE, USERNAME_HELP, loginName } from "./login.js";
 import { h, field, input, passwordInput, btn, toast, friendlyError } from "./ui.js";
 import { loadCarriers } from "./data.js";
-import ownerViews from "./views/owner.js";
-import dispatcherViews from "./views/dispatcher.js";
-import carrierViews from "./views/carrier.js";
+import ownerViews, { sections as ownerSections } from "./views/owner.js";
+import dispatcherViews, { sections as dispatcherSections } from "./views/dispatcher.js";
+import carrierViews, { sections as carrierSections } from "./views/carrier.js";
 import driverViews from "./views/driver.js";
 
+// Each role's pages, and the menu sections they're grouped into (no sections: one menu item per page).
 const ROLES = {
-  owner: { label: "Owner", views: ownerViews },
-  dispatcher: { label: "Dispatcher", views: dispatcherViews },
-  carrierAdmin: { label: "Carrier admin", views: carrierViews },
+  owner: { label: "Owner", views: ownerViews, sections: ownerSections },
+  dispatcher: { label: "Dispatcher", views: dispatcherViews, sections: dispatcherSections },
+  carrierAdmin: { label: "Carrier admin", views: carrierViews, sections: carrierSections },
   driver: { label: "Driver", views: driverViews },
 };
+
+// Menu sections for a role. A page left out of every section still gets its own menu item.
+function menuSections(role) {
+  const byId = new Map(role.views.map((v) => [v.id, v]));
+  const out = (role.sections || []).map((s) => ({ label: s.label, pages: s.pages.map((id) => byId.get(id)).filter(Boolean) })).filter((s) => s.pages.length);
+  const used = new Set(out.flatMap((s) => s.pages));
+  role.views.filter((v) => !used.has(v)).forEach((v) => out.push({ label: v.label, pages: [v] }));
+  return out;
+}
 
 const root = document.getElementById("app");
 let profileUnsub = null;
@@ -282,7 +292,8 @@ async function renderShell(user, profile) {
   }
 
   const views = role.views;
-  const current = () => views.find((v) => "#" + v.id === location.hash) || views[0];
+  const sections = menuSections(role);
+  const current = () => views.find((v) => "#" + v.id === location.hash) || sections[0].pages[0];
   const content = h("main", { class: "content", id: "content", tabindex: "-1" });
   const nav = h("nav", { class: "site-nav", id: "site-nav", "aria-label": "Main" });
   const title = h("h1", null);
@@ -300,15 +311,26 @@ async function renderShell(user, profile) {
   const show = () => {
     clearView();
     const v = current();
-    nav.replaceChildren(...views.map((x) => h("a", { href: "#" + x.id, class: "nav-link" + (x === v ? " on" : ""), "aria-current": x === v ? "page" : null }, x.label)));
-    title.textContent = v.label;
+    const sec = sections.find((s) => s.pages.includes(v));
+    nav.replaceChildren(...sections.map((s) => h("a", {
+      href: "#" + s.pages[0].id, class: "nav-link" + (s === sec ? " on" : ""), "aria-current": s === sec ? "page" : null,
+      "data-pages": s.pages.map((x) => x.label).join("|"),
+    }, s.label)));
+    // a section with several pages: its name as the title, its pages as tabs
+    const tabbed = sec.pages.length > 1;
+    title.textContent = tabbed ? sec.label : v.label;
+    const tabs = tabbed ? h("nav", { class: "page-tabs", "aria-label": sec.label + " pages" },
+      sec.pages.map((x) => h("a", { href: "#" + x.id, class: "page-tab" + (x === v ? " on" : ""), "aria-current": x === v ? "page" : null }, x.label))) : null;
     const body = h("div", { class: "view" });
     content.replaceChildren(
       h("header", { class: "page-head" },
         h("div", null,
           h("div", { class: "eyebrow" }, [role.label, profile.role === "carrierAdmin" || profile.role === "driver" ? ctx.carrierName(profile.carrierId) : null].filter(Boolean).join(" · ")),
-          title)),
+          title),
+        tabs),
       body);
+    // on a phone, keep the open tab in view
+    if (tabs) { const on = tabs.querySelector(".on"); if (on) tabs.scrollLeft = Math.max(0, on.offsetLeft - 16); }
     try { v.render(ctx, body); } catch (e) { console.error(e); body.append(h("p", { class: "form-error" }, "This page hit an error: " + e.message)); }
   };
   window.onhashchange = show;
