@@ -6,7 +6,9 @@ import { toast } from "./ui.js";
 
 let urlPromise = null;
 export function driveUrl() {
-  if (!urlPromise) urlPromise = getDoc(doc(db, "settings", "app")).then((s) => (s.exists() ? s.data().driveUrl || "" : "")).catch(() => "");
+  // Remember the link once found; if Drive isn't connected yet, look again next time (the owner may connect it meanwhile).
+  if (!urlPromise) urlPromise = getDoc(doc(db, "settings", "app")).then((s) => (s.exists() ? s.data().driveUrl || "" : "")).catch(() => "")
+    .then((u) => { if (!u) urlPromise = null; return u; });
   return urlPromise;
 }
 export function forgetDriveUrl() { urlPromise = null; }

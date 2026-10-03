@@ -47,7 +47,7 @@ Plain HTML/CSS/JS (no build step) on Firebase: Authentication (email/password) a
 - `trucks/{id}`: carrierId, unit, type, vin, plate, regExpires
 - `loads/{id}`: carrierId, origin, destination, pickupDate, deliverBy, miles, driverId/driverName, truckId/truckUnit, dispatcherId, status
 - `loadMoney/{loadId}`: carrierId, rate, fee, feePaid (kept separate so drivers never see it)
-- `documents/{id}`: carrierId, loadId, kind/category, name, tags, expiresAt, storagePath, uploadedBy, status (pending/approved/rejected/filed)
+- `documents/{id}`: carrierId, loadId, kind/category, name, tags, expiresAt, storagePath, uploadedBy, status (pending/approved/rejected/filed); truck and driver files also carry truckId + truckUnit or driverId + driverName (category "Truck files" / "Driver files"). A driver can read the filed papers of the truck they're assigned and their own driver file.
 - `requests/{id}`: carrierId, truckId, text, status, reply
 - `paystubs/{id}`: carrierId, driverId, period, loads[], gross, deductions, net
 - `invites/{code}`: role, carrierId, used, usedBy

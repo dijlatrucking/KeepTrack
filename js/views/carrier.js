@@ -1,7 +1,7 @@
 import { db, collection, doc, addDoc, setDoc, updateDoc, deleteDoc, query, where, serverTimestamp } from "../fb.js";
 import { h, card, table, stat, money, num, field, input, select, btn, formToObj, guard, inviteCode, pill, fmtDate, ago, toDate, toast } from "../ui.js";
 import { watch, byNewest, driverPayFor } from "../data.js";
-import { lane, shortId, openDoc, scanPicker, saveScans, docsReviewQueue, showInvite } from "../components.js";
+import { lane, shortId, openDoc, scanPicker, saveScans, docsReviewQueue, showInvite, openSubjectFiles, isExpiring, FILE_CATEGORY } from "../components.js";
 import { docActions } from "../editing.js";
 import { personLabel } from "../login.js";
 import { summaryView, loadsView, expensesView, taxView, carrierSettingsCard } from "../ops.js";
@@ -53,6 +53,7 @@ function people(ctx, root) {
       h("div", { class: "row-top" },
         h("div", null, h("div", { class: "strong" }, personLabel(d), d.manual ? h("span", { class: "pill pill-neutral tag" }, "No app login") : null), h("div", { class: "muted small" }, [d.truckUnit, payText(d), d.phone].filter(Boolean).join(" · "))),
         h("div", { class: "row-meta" },
+          filesBtn("driver", d.id, personLabel(d)),
           btn("Edit", () => { edit.hidden = !edit.hidden; edit.hidden ? openEdits.delete(d.id) : openEdits.add(d.id); }),
           btn("Remove", async () => {
             if (!confirm(d.manual ? `Remove ${d.name}?` : `Remove ${personLabel(d)}? They lose access to the company right away.`)) return;
@@ -62,20 +63,37 @@ function people(ctx, root) {
   })) : h("p", { class: "empty" }, "No drivers yet. Invite one, or add one by hand."));
 
   let driverCache = [];
+  // Papers on file for each truck and driver (registration, insurance, IFTA… / CDL, med card…)
+  let files = [];
+  const filesOf = (key, id) => files.filter((d) => d[key] === id && d.status !== "rejected");
+  const filesBtn = (kind, id, label) => {
+    const list = filesOf(kind === "truck" ? "truckId" : "driverId", id), late = list.filter(isExpiring).length;
+    return btn(list.length ? `Documents (${list.length})${late ? " ⚠" : ""}` : "Documents",
+      () => openSubjectFiles(ctx, { kind, id, label, carrierId: cid(ctx) }), late ? "secondary" : "ghost",
+      { class: "btn btn-sm" + (late ? " btn-warn" : " btn-ghost"), title: late ? `${late} expiring or expired` : "" });
+  };
+  const mergeFiles = (() => { const parts = [[], []]; return (i) => (r) => { parts[i] = r; files = [...parts[0], ...parts[1]]; drawDrivers(driverCache); drawTrucks(); }; })();
+  ctx.sub(watch(q(ctx, "documents", where("category", "==", FILE_CATEGORY.truck)), mergeFiles(0)));
+  ctx.sub(watch(q(ctx, "documents", where("category", "==", FILE_CATEGORY.driver)), mergeFiles(1)));
   const manualTruck = select("truckId", [{ value: "", label: "No truck" }]);
   ctx.sub(watch(q(ctx, "trucks"), (r) => {
     trucks = r.sort((a, b) => (a.unit || "").localeCompare(b.unit || ""));
     manualTruck.replaceChildren(h("option", { value: "" }, "No truck"), ...trucks.map((t) => h("option", { value: t.id }, t.unit)));
     drawDrivers(driverCache);
+    drawTrucks();
+  }));
+  function drawTrucks() {
     trucksBody.replaceChildren(table([
       { label: "Unit", cell: (t) => h("span", { class: "strong" }, t.unit) },
       { label: "Type", cell: (t) => t.type || "—" },
       { label: "VIN / Plate", cell: (t) => [t.vin, t.plate].filter(Boolean).join(" · ") || "—" },
       { label: "Registration exp.", cell: (t) => fmtDate(t.regExpires) },
-      { label: "", cell: (t) => btn("Remove", () => confirm(`Remove ${t.unit}?`) && guard(() => deleteDoc(doc(db, "trucks", t.id)), "Truck removed"), "ghost") },
+      { label: "Driver", cell: (t) => driverCache.filter((d) => d.truckId === t.id).map((d) => personLabel(d)).join(", ") || "—" },
+      { label: "", cell: (t) => h("div", { class: "row-inline" }, filesBtn("truck", t.id, t.unit),
+        btn("Remove", () => confirm(`Remove ${t.unit}?`) && guard(() => deleteDoc(doc(db, "trucks", t.id)), "Truck removed"), "ghost")) },
     ], trucks, "No trucks yet."));
-  }));
-  ctx.sub(watch(q(ctx, "users", where("role", "==", "driver")), (r) => { driverCache = r; drawDrivers(r); }));
+  }
+  ctx.sub(watch(q(ctx, "users", where("role", "==", "driver")), (r) => { driverCache = r; drawDrivers(r); drawTrucks(); }));
 
   const truckForm = h("form", { class: "form-grid", onSubmit: async (e) => {
     e.preventDefault();
@@ -127,17 +145,17 @@ function people(ctx, root) {
 
 function documents(ctx, root) {
   let docs = [], term = "", cat = "All";
-  const CATS = ["All", "Insurance", "Authority", "W-9", "Registrations", "CDLs & med cards", "Rate cons", "BOLs", "Receipts", "Other"];
+  const CATS = ["All", "Insurance", "Authority", "W-9", "Registrations", "CDLs & med cards", "Truck files", "Driver files", "Rate cons", "BOLs", "Receipts", "Other"];
   const listBody = h("div");
   const chips = h("div", { class: "chips" });
   const draw = () => {
     chips.replaceChildren(...CATS.map((c) => h("button", { type: "button", class: "chip" + (cat === c ? " on" : ""), "aria-pressed": String(cat === c), onClick: () => { cat = c; draw(); } }, c)));
     const t = term.toLowerCase();
     const shown = docs.filter((d) => {
-      const category = d.status === "filed" && d.category ? d.category : ({ BOL: "BOLs", POD: "BOLs", Receipt: "Receipts", Lumper: "Receipts", "Rate con": "Rate cons", Insurance: "Insurance", Authority: "Authority", "W-9": "W-9", Registration: "Registrations", "CDL / med card": "CDLs & med cards" }[d.kind] || "Other");
+      const category = (d.status === "filed" || d.truckId || d.driverId) && d.category ? d.category : ({ BOL: "BOLs", POD: "BOLs", Receipt: "Receipts", Lumper: "Receipts", "Rate con": "Rate cons", Insurance: "Insurance", Authority: "Authority", "W-9": "W-9", Registration: "Registrations", "CDL / med card": "CDLs & med cards" }[d.kind] || "Other");
       if (cat !== "All" && category !== cat) return false;
       if (!t) return true;
-      return [d.name, d.category, d.kind, d.tags, d.uploaderName, d.loadLabel].filter(Boolean).join(" ").toLowerCase().includes(t);
+      return [d.name, d.category, d.kind, d.tags, d.uploaderName, d.loadLabel, d.truckUnit, d.driverName, d.note].filter(Boolean).join(" ").toLowerCase().includes(t);
     }).sort(byNewest);
     const soon = Date.now() + 30 * 86400000;
     listBody.replaceChildren(shown.length ? h("div", { class: "list" }, shown.map((d) => {

@@ -3,7 +3,7 @@ import {
   db, storage, collection, doc, addDoc, setDoc, updateDoc, getDoc, getDocs, query, where,
   serverTimestamp, writeBatch, ref, getDownloadURL
 } from "./fb.js";
-import { h, card, table, pill, money, num, fmtDate, ago, field, input, select, btn, formToObj, guard, toast, friendlyError } from "./ui.js";
+import { h, card, table, pill, money, num, fmtDate, ago, toDate, field, input, select, btn, formToObj, guard, toast, friendlyError } from "./ui.js";
 import { watch, watchMany, perCarrier, scoped, byNewest } from "./data.js";
 import { sendToDrive, removeFromDrive, fetchFromDrive } from "./drive.js";
 
@@ -76,9 +76,8 @@ export async function toScan(file) {
   throw new Error("Couldn't shrink that photo enough. Try again a little closer to the page.");
 }
 
-export async function openDoc(d) {
-  const w = window.open("", "_blank");
-  try {
+// Where a document's file can be loaded from: a link (old Storage files) or a blob made from the saved scan.
+async function docSource(d) {
     let url;
     if (d.storagePath) {
       url = await getDownloadURL(ref(storage, d.storagePath));
@@ -98,11 +97,46 @@ export async function openDoc(d) {
       const blob = await (await fetch(data)).blob();
       url = URL.createObjectURL(blob);
     }
+    return { url, pdf: d.fileType === "pdf" || /\.pdf($|\?)/i.test(d.storagePath || "") };
+}
+const openFail = (e) => {
+  console.error(e);
+  toast(e && e.message && e.message !== "missing" && !/fetch/i.test(e.message) ? e.message : "Couldn't open that file.", "bad");
+};
+
+export async function openDoc(d) {
+  const w = window.open("", "_blank");
+  try {
+    const { url } = await docSource(d);
     if (w) w.location = url; else window.location = url;
   } catch (e) {
-    console.error(e);
     if (w) w.close();
-    toast(e && e.message && e.message !== "missing" && !/fetch/i.test(e.message) ? e.message : "Couldn't open that file.", "bad");
+    openFail(e);
+  }
+}
+
+// Save a copy of the file on this phone or computer.
+export async function downloadDoc(d) {
+  try {
+    const { url, pdf } = await docSource(d);
+    const a = h("a", { href: url, download: String(d.name || d.kind || "document").replace(/[\\/:*?"<>|]+/g, "-") + (pdf ? ".pdf" : ".jpg") });
+    document.body.append(a); a.click(); a.remove();
+  } catch (e) { openFail(e); }
+}
+
+// Print: photos open on a clean page and the print dialog comes up; PDFs open in the browser's viewer (print from there).
+export async function printDoc(d) {
+  const w = window.open("", "_blank");
+  try {
+    const { url, pdf } = await docSource(d);
+    if (!w) { window.location = url; return; }
+    if (pdf) { w.location = url; return; }
+    const title = String(d.name || "Document").replace(/[<>&"]/g, "");
+    w.document.write(`<!doctype html><title>${title}</title><style>@page{margin:10mm}html,body{margin:0;background:#fff}img{display:block;max-width:100%;max-height:100vh;margin:0 auto}</style><img src="${url}" alt="${title}" onload="setTimeout(function(){window.focus();window.print()},250)">`);
+    w.document.close();
+  } catch (e) {
+    if (w) w.close();
+    openFail(e);
   }
 }
 
@@ -114,12 +148,13 @@ export async function fingerprint(data) {
 }
 
 // Is this exact file already on file for the carrier? Drivers can only check their own uploads.
-async function alreadyOnFile(ctx, carrierId, hash) {
+async function alreadyOnFile(ctx, carrierId, hash, meta = {}) {
   try {
     const w = [where("carrierId", "==", carrierId), where("hash", "==", hash)];
     if (ctx.profile.role === "driver") w.push(where("uploadedBy", "==", ctx.uid));
     const snap = await getDocs(query(collection(db, "documents"), ...w));
-    const hit = snap.docs.map((d) => ({ id: d.id, ...d.data() })).find((d) => d.status !== "rejected");
+    const same = (d) => (d.truckId || null) === (meta.truckId || null) && (d.driverId || null) === (meta.driverId || null);
+    const hit = snap.docs.map((d) => ({ id: d.id, ...d.data() })).find((d) => d.status !== "rejected" && same(d));
     return hit || null;
   } catch (e) { return null; }
 }
@@ -128,7 +163,7 @@ export async function uploadDoc(ctx, file, meta) {
   if (!file) throw new Error("Choose a file or take a photo first.");
   const data = await toScan(file);
   const hash = await fingerprint(data);
-  const dupe = await alreadyOnFile(ctx, meta.carrierId, hash);
+  const dupe = await alreadyOnFile(ctx, meta.carrierId, hash, meta);
   if (dupe) {
     const one = `Already on file: “${dupe.name}”${dupe.uploaderName ? " from " + dupe.uploaderName : ""}. Not saved twice.`;
     if (!meta._quiet) toast((n) => (n === 1 ? one : `${n} were already on file. Not saved twice.`), "info", { key: "dupe" });
@@ -152,6 +187,93 @@ export async function uploadDoc(ctx, file, meta) {
   await batch.commit();
   sendToDrive(docRef.id); // copy to Google Drive in the background (if connected)
   return docRef;
+}
+
+// ---------- Truck & driver files (registration, insurance, IFTA… / CDL, med card…) ----------
+export const TRUCK_DOC_TYPES = ["Registration / cab card", "Insurance card", "IFTA license", "IRP / apportioned", "Annual DOT inspection", "Lease agreement", "Title", "Permit", "Other"];
+export const DRIVER_DOC_TYPES = ["CDL", "Medical card", "MVR", "Drug & alcohol test", "Clearinghouse", "Driver application", "Road test", "Other"];
+export const FILE_CATEGORY = { truck: "Truck files", driver: "Driver files" };
+const SOON_MS = 30 * 86400000;
+
+// "Expired" / "Expires Mar 3" tag for a paper with an expiry date (30 days' warning).
+export function expiryTag(d) {
+  const exp = toDate(d.expiresAt);
+  if (!exp) return null;
+  const late = exp.getTime() < Date.now(), soon = exp.getTime() < Date.now() + SOON_MS;
+  if (!late && !soon) return null;
+  return h("span", { class: "pill pill-" + (late ? "bad" : "warn") + " tag" }, late ? "Expired" : "Expires soon");
+}
+// Expiry dates carry the year: papers often run a year or more out.
+const fullDate = (d) => d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+export const isExpiring = (d) => { const exp = toDate(d.expiresAt); return !!exp && exp.getTime() < Date.now() + SOON_MS; };
+
+// One paper with Open / Download / Print (and Edit / Delete for people who manage the company).
+export function fileRow(ctx, d, { manage = false } = {}) {
+  const exp = toDate(d.expiresAt);
+  // the name is "<type> · <truck or driver>", already clear from where the list is; show it only if it was changed
+  const ownName = d.name && !String(d.name).startsWith(d.kind || "\u0000") ? d.name : null;
+  return h("div", { class: "row" },
+    h("div", { class: "grow" },
+      h("div", { class: "strong" }, d.kind || d.name || "Document", expiryTag(d)),
+      h("div", { class: "muted small" }, [exp && !isNaN(exp) ? "Expires " + fullDate(exp) : "No expiry date", d.note, ownName].filter(Boolean).join(" · "))),
+    h("div", { class: "row-meta" },
+      btn("Open", () => openDoc(d), "secondary", { class: "btn btn-sm" }),
+      btn("Download", () => downloadDoc(d), "ghost", { class: "btn btn-ghost btn-sm" }),
+      btn("Print", () => printDoc(d), "ghost", { class: "btn btn-ghost btn-sm" }),
+      ...(manage ? editButtons(ctx, d) : [])));
+}
+// Edit / Delete buttons come from editing.js (loaded lazily: it imports this file too).
+let docActionsFn = null;
+import("./editing.js").then((m) => { docActionsFn = m.docActions; });
+const editButtons = (ctx, d) => (docActionsFn ? docActionsFn(ctx, d) : []);
+
+// Pop-up with every paper for one truck or one driver, plus a form to add more.
+// subject: { kind: "truck" | "driver", id, carrierId, label }
+export function openSubjectFiles(ctx, subject) {
+  const truck = subject.kind === "truck";
+  const types = truck ? TRUCK_DOC_TYPES : DRIVER_DOC_TYPES;
+  const listBody = h("div", null, h("p", { class: "muted small" }, "Loading…"));
+  const dlg = h("dialog", { class: "dialog dialog-wide", "aria-label": `${subject.label} documents` });
+  let unsub = () => {};
+  const close = () => { unsub(); dlg.close(); dlg.remove(); };
+  unsub = watch(query(collection(db, "documents"), where("carrierId", "==", subject.carrierId), where(truck ? "truckId" : "driverId", "==", subject.id)), (docs) => {
+    const live = docs.filter((d) => d.status !== "rejected")
+      .sort((a, b) => types.indexOf(a.kind) - types.indexOf(b.kind) || String(a.kind || "").localeCompare(String(b.kind || "")));
+    listBody.replaceChildren(live.length ? h("div", { class: "list" }, live.map((d) => fileRow(ctx, d, { manage: true })))
+      : h("p", { class: "empty" }, truck ? "No documents for this truck yet." : "No documents for this driver yet."));
+  });
+  const typeSel = select("kind", types);
+  const scans = scanPicker("Pages (scan with your camera or choose a PDF/photo)");
+  const form = h("form", { class: "stack", onSubmit: async (e) => {
+    e.preventDefault();
+    const f = formToObj(form);
+    if (!scans.files().length) return toast("Scan or choose at least one page.", "bad");
+    const meta = {
+      carrierId: subject.carrierId, kind: f.kind, category: FILE_CATEGORY[subject.kind],
+      name: `${f.kind} · ${subject.label}`, tags: subject.label, note: f.note.trim() || undefined, expiresAt: f.expiresAt || null,
+      status: ctx.profile.role === "carrierAdmin" ? "filed" : "approved",
+      ...(truck ? { truckId: subject.id, truckUnit: subject.label } : { driverId: subject.id, driverName: subject.label }),
+    };
+    const save = form.querySelector('button[type="submit"]');
+    save.disabled = true;
+    const ok = await guard(() => saveScans(ctx, scans.files(), meta), "Document saved");
+    save.disabled = false;
+    if (ok !== null) { form.reset(); scans.clear(); }
+  } },
+    h("div", { class: "muted small upper" }, "Add a document"),
+    h("div", { class: "form-grid" },
+      field("Type", typeSel),
+      field("Expires", input("expiresAt", { type: "date" }), "Flagged 30 days ahead"),
+      field("Note", input("note", { placeholder: truck ? "Policy #, state, plate…" : "License #, state, class…" }))),
+    scans.el,
+    h("div", { class: "row-inline" }, btn("Save document", null, "primary", { type: "submit" })));
+  dlg.append(h("div", { class: "stack" },
+    h("div", { class: "row-top" }, h("h2", null, `${subject.label} · documents`), btn("Close", close, "ghost")),
+    truck ? h("p", { class: "muted small" }, "The driver assigned to this truck can open, download and print these from their app.") : null,
+    listBody, form));
+  dlg.addEventListener("cancel", (e) => { e.preventDefault(); close(); });
+  document.body.append(dlg);
+  dlg.showModal();
 }
 
 export const DOC_KINDS = ["Rate con", "BOL", "POD", "Receipt", "Lumper", "Insurance", "Authority", "W-9", "Registration", "CDL / med card", "Other"];
