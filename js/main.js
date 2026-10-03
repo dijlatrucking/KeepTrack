@@ -383,8 +383,8 @@ if (!isConfigured) {
       if (snap.metadata.hasPendingWrites) return;
       if (!snap.exists()) return renderNoProfile(user);
       const p = snap.data();
-      // Re-render the shell only when access-relevant fields change.
-      const key = JSON.stringify([p.role, p.carrierId, p.allCarriers, p.assignedCarriers, p.name]);
+      // Re-render the shell only when access-relevant fields change (a driver's truck decides which papers they can read).
+      const key = JSON.stringify([p.role, p.carrierId, p.allCarriers, p.assignedCarriers, p.name, p.truckId || null]);
       if (key === lastKey) return;
       lastKey = key;
       renderShell(user, p);

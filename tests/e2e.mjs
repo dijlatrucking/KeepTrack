@@ -483,14 +483,16 @@ await run("Carrier files Unit 7's registration and Drew's medical card; the coun
   await dlg.locator('input[name="note"]').fill("Plate TX 123");
   await dlg.locator('input[data-role="choose"]').setInputFiles({ name: "cab.pdf", mimeType: "application/pdf", buffer: tinyPdf });
   await dlg.getByRole("button", { name: "Save document" }).click();
-  await toast(carrier, "Saved");
+  await toast(carrier, "Document saved");
   await dlg.locator(".row", { hasText: "Registration / cab card" }).waitFor();
+  await waitFor(async () => !(await dlg.locator(".scan-item").count()), "the add form didn't clear after saving");
   // insurance that runs out soon: flagged in the pop-up and on the truck's button
   await dlg.locator('select[name="kind"]').selectOption("Insurance card");
   await dlg.locator('input[name="expiresAt"]').fill(iso(12));
   await dlg.locator('input[data-role="choose"]').setInputFiles({ name: "ins.png", mimeType: "image/png", buffer: noisyPng(700, 900) });
   await dlg.getByRole("button", { name: "Save document" }).click();
   await dlg.locator(".row", { hasText: "Insurance card" }).waitFor();
+  await waitFor(async () => !(await dlg.locator(".scan-item").count()), "the add form didn't clear after saving");
   await dlg.getByRole("button", { name: "Close" }).click();
   await tr.getByRole("button", { name: "Documents (2) ⚠" }).waitFor();
 
@@ -501,9 +503,13 @@ await run("Carrier files Unit 7's registration and Drew's medical card; the coun
   await dlg.locator('input[data-role="choose"]').setInputFiles({ name: "med.png", mimeType: "image/png", buffer: noisyPng(600, 800) });
   await dlg.getByRole("button", { name: "Save document" }).click();
   await dlg.locator(".row", { hasText: "Medical card" }).waitFor();
+  await waitFor(async () => !(await dlg.locator(".scan-item").count()), "the add form didn't clear after saving");
   await dlg.getByRole("button", { name: "Close" }).click();
   await carrier.locator(".row", { hasText: "Drew Driver" }).first().getByRole("button", { name: "Documents (1)" }).waitFor();
 });
+
+// if the step above failed part-way, don't leave its pop-up covering the carrier's page
+await carrier.evaluate(() => document.querySelectorAll("dialog[open]").forEach((d) => { d.close(); d.remove(); })).catch(() => {});
 
 await run("Driver opens My truck: sees Unit 7's papers and their own, and can download and print them", async () => {
   await nav(driver, "My truck");
@@ -519,6 +525,7 @@ await run("Driver opens My truck: sees Unit 7's papers and their own, and can do
   await pop.close().catch(() => {});
   if (await driver.locator(".row-meta button", { hasText: "Delete" }).count()) throw new Error("driver was offered Delete on a carrier file");
 });
+await nav(driver, "Loads").catch(() => {});
 
 await run("Owner's Google Drive is connected (test stand-in for the Apps Script)", async () => {
   await seed((db) => setDoc(doc(db, "settings", "app"), { driveUrl: `http://127.0.0.1:${DRIVE_PORT}/exec` }));

@@ -251,7 +251,10 @@ export function openSubjectFiles(ctx, subject) {
       status: ctx.profile.role === "carrierAdmin" ? "filed" : "approved",
       ...(truck ? { truckId: subject.id, truckUnit: subject.label } : { driverId: subject.id, driverName: subject.label }),
     };
-    const ok = await guard(() => saveScans(ctx, scans.files(), meta), "Saved");
+    const save = form.querySelector('button[type="submit"]');
+    save.disabled = true;
+    const ok = await guard(() => saveScans(ctx, scans.files(), meta), "Document saved");
+    save.disabled = false;
     if (ok !== null) { form.reset(); scans.clear(); }
   } },
     h("div", { class: "muted small upper" }, "Add a document"),
