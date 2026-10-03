@@ -149,19 +149,39 @@ service cloud.firestore {
       allow delete: if isOwner() || isCarrierAdmin(resource.data.carrierId);
     }
 
+    // Truck & driver files (registration, insurance, IFTA… / CDL, med card…): a paper can carry a truckId or a
+    // driverId. The driver assigned to that truck (or that driver) may read it once it's on file.
+    function nonEmpty(v) { return v is string && v.size() > 0; }
+    function readsAsDriver(d) {
+      return isDriverIn(d.carrierId) && d.get('status', '') in ['filed', 'approved'] && (
+           (nonEmpty(d.get('truckId', '')) && d.get('truckId', '') == me().get('truckId', ''))
+        || d.get('driverId', '') == request.auth.uid);
+    }
+    // A truck or driver on a paper must belong to the same carrier.
+    function subjectFits(d) {
+      return (!('truckId' in d) || d.truckId == null
+              || get(/databases/$(database)/documents/trucks/$(d.truckId)).data.carrierId == d.carrierId)
+        && (!('driverId' in d) || d.driverId == null
+              || get(/databases/$(database)/documents/users/$(d.driverId)).data.get('carrierId', '') == d.carrierId);
+    }
+
     // Paperwork flows up: driver uploads (pending) → dispatch approves → carrier + owner see it.
     match /documents/{id} {
       // Driver uploads reach dispatch and the carrier at the same time; either can approve or reject.
       allow read: if staff(resource.data.carrierId)
         || isCarrierAdmin(resource.data.carrierId)
         || (hasProfile() && resource.data.uploadedBy == request.auth.uid
-            && me().get('carrierId', '') == resource.data.carrierId);
+            && me().get('carrierId', '') == resource.data.carrierId)
+        || readsAsDriver(resource.data);
       // a paper can only be filed under a load that exists and belongs to the same carrier
       allow create: if request.resource.data.uploadedBy == request.auth.uid
         && (request.resource.data.get('loadId', null) == null
             || get(/databases/$(database)/documents/loads/$(request.resource.data.loadId)).data.carrierId == request.resource.data.carrierId)
+        && subjectFits(request.resource.data)
         && (
-           (isDriverIn(request.resource.data.carrierId) && request.resource.data.status == 'pending')
+           // drivers send load papers and receipts; truck & driver files are added by the company
+           (isDriverIn(request.resource.data.carrierId) && request.resource.data.status == 'pending'
+            && !('truckId' in request.resource.data) && !('driverId' in request.resource.data))
         || (isCarrierAdmin(request.resource.data.carrierId) && request.resource.data.status == 'filed')
         || staff(request.resource.data.carrierId));
       // A paper can only be moved to one of the same carrier's loads.
@@ -170,7 +190,7 @@ service cloud.firestore {
           || request.resource.data.get('loadId', null) == null
           || get(/databases/$(database)/documents/loads/$(request.resource.data.loadId)).data.carrierId == resource.data.carrierId;
       }
-      allow update: if (staff(resource.data.carrierId) && keepsCarrier() && loadFits())
+      allow update: if (staff(resource.data.carrierId) && keepsCarrier() && loadFits() && subjectFits(request.resource.data))
         // carrier admins fix the details of their company's papers (type, name, load, amount, note, tags, expiry)
         || (isCarrierAdmin(resource.data.carrierId) && keepsCarrier() && loadFits()
             && onlyChanges(['name', 'category', 'kind', 'tags', 'expiresAt', 'note', 'amount', 'receiptType', 'loadId', 'loadLabel']))
@@ -190,7 +210,8 @@ service cloud.firestore {
       allow get: if hasProfile() && (
            staff(docMeta().carrierId)
         || isCarrierAdmin(docMeta().carrierId)
-        || (docMeta().uploadedBy == request.auth.uid && me().get('carrierId', '') == docMeta().carrierId));
+        || (docMeta().uploadedBy == request.auth.uid && me().get('carrierId', '') == docMeta().carrierId)
+        || readsAsDriver(docMeta()));
       allow create: if hasProfile()
         && request.resource.data.uploadedBy == request.auth.uid
         && getAfter(/databases/$(database)/documents/documents/$(id)).data.uploadedBy == request.auth.uid

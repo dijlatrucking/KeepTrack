@@ -1,7 +1,7 @@
 import { db, collection, doc, updateDoc, query, where, serverTimestamp } from "../fb.js";
 import { h, card, stat, money, num, field, input, select, btn, guard, pill, fmtDate, ago, toDate, table, toast } from "../ui.js";
 import { watch, byNewest } from "../data.js";
-import { lane, shortId, uploadDoc, scanPicker, saveScans, openDoc, moreButton } from "../components.js";
+import { lane, shortId, uploadDoc, scanPicker, saveScans, openDoc, moreButton, fileRow, TRUCK_DOC_TYPES, DRIVER_DOC_TYPES } from "../components.js";
 
 const mine = (ctx, coll, field) => query(collection(db, coll), where("carrierId", "==", ctx.profile.carrierId), where(field, "==", ctx.uid));
 
@@ -163,8 +163,42 @@ function pay(ctx, root) {
   root.append(card("Paystubs", null, body));
 }
 
+// The truck the carrier assigned to this driver, with its papers (registration, insurance, IFTA…) to open,
+// download or print, plus the driver's own papers on file (CDL, med card…).
+// The rules only let a driver read papers that are on file, so the query has to say so too.
+const ON_FILE = where("status", "in", ["filed", "approved"]);
+function truckPage(ctx, root) {
+  const truckId = ctx.profile.truckId, cid = ctx.profile.carrierId;
+  const byType = (types) => (a, b) => types.indexOf(a.kind) - types.indexOf(b.kind) || String(a.kind || "").localeCompare(String(b.kind || ""));
+  const shown = (d) => d.status === "filed" || d.status === "approved";
+  const mineBody = h("div", null, h("p", { class: "muted small" }, "Loading…"));
+  ctx.sub(watch(query(collection(db, "documents"), where("carrierId", "==", cid), where("driverId", "==", ctx.uid), ON_FILE), (docs) => {
+    const list = docs.filter(shown).sort(byType(DRIVER_DOC_TYPES));
+    mineBody.replaceChildren(list.length ? h("div", { class: "list" }, list.map((d) => fileRow(ctx, d))) : h("p", { class: "empty" }, "Nothing on file yet."));
+  }));
+  const mine = card("My papers on file", null, h("p", { class: "muted small" }, "What your carrier keeps on file for you."), mineBody);
+  if (!truckId) {
+    root.append(card("My truck", null, h("p", { class: "empty" }, "No truck assigned to you yet. Your carrier sets this under Drivers & trucks.")), mine);
+    return;
+  }
+  const head = h("div", { class: "muted" }, ctx.profile.truckUnit || "");
+  ctx.sub(watch(query(collection(db, "trucks"), where("carrierId", "==", cid)), (trucks) => {
+    const t = trucks.find((x) => x.id === truckId);
+    if (t) head.replaceChildren(h("div", { class: "load-lane" }, t.unit || "Truck"),
+      h("div", { class: "muted" }, [t.type, t.plate ? "Plate " + t.plate : null, t.vin ? "VIN " + t.vin : null, t.regExpires ? "Registration exp. " + fmtDate(t.regExpires) : null].filter(Boolean).join(" · ")));
+  }));
+  const body = h("div", null, h("p", { class: "muted small" }, "Loading…"));
+  ctx.sub(watch(query(collection(db, "documents"), where("carrierId", "==", cid), where("truckId", "==", truckId), ON_FILE), (docs) => {
+    const list = docs.filter(shown).sort(byType(TRUCK_DOC_TYPES));
+    body.replaceChildren(list.length ? h("div", { class: "list" }, list.map((d) => fileRow(ctx, d)))
+      : h("p", { class: "empty" }, "No documents for this truck yet. Ask your carrier to add the registration, insurance and IFTA papers."));
+  }));
+  root.append(card("My truck", null, head), card("Truck documents", null, h("p", { class: "muted small" }, "Keep these handy for inspections and scales. Open, download or print any of them."), body), mine);
+}
+
 export default [
   { id: "home", label: "Loads", render: home },
+  { id: "truck", label: "My truck", render: truckPage },
   { id: "uploads", label: "My uploads", render: uploads },
   { id: "pay", label: "Pay", render: pay },
 ];

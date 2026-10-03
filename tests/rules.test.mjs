@@ -451,6 +451,66 @@ await allow("owner deletes a dispatched load", () => delLoad(o, "L5"));
   await deny("dispatcher files carrier A paperwork under carrier B's load", () => upload(as("dispA"), "dispA", { loadId: "L3" }));
 }
 
+// ---------- Truck & driver files (registration, insurance, IFTA… / CDL, med card…) ----------
+{
+  await env.withSecurityRulesDisabled(async (c) => {
+    const db = c.firestore();
+    const put = (p, d) => setDoc(doc(db, p), d);
+    await put("trucks/tA2", { carrierId: "A", unit: "Unit 2" });
+    await put("users/drvT1", { role: "driver", carrierId: "A", name: "Truck Driver", truckId: "tA1", truckUnit: "Unit 1" });
+    await put("users/drvT2", { role: "driver", carrierId: "A", name: "Other Truck", truckId: "tA2", truckUnit: "Unit 2" });
+    await put("users/drvNoTruck", { role: "driver", carrierId: "A", name: "No Truck", truckId: null });
+    await put("users/drvBT", { role: "driver", carrierId: "B", name: "B Driver", truckId: "tA1" });   // wrong carrier, same truck id
+    const file = (id, d) => Promise.all([put(`documents/${id}`, { carrierId: "A", uploadedBy: "adminA", status: "filed", ...d }), put(`docFiles/${id}`, { carrierId: "A", uploadedBy: "adminA", data: "data:image/jpeg;base64,AAAA" })]);
+    await file("TF1", { kind: "Registration / cab card", category: "Truck files", truckId: "tA1", truckUnit: "Unit 1" });
+    await file("TF2", { kind: "Insurance card", category: "Truck files", truckId: "tA2", truckUnit: "Unit 2" });
+    await file("TF3", { kind: "IFTA license", category: "Truck files", truckId: "tA1", truckUnit: "Unit 1", status: "rejected" });
+    await file("DF1", { kind: "CDL", category: "Driver files", driverId: "drvT1", driverName: "Truck Driver" });
+    await file("DF2", { kind: "Medical card", category: "Driver files", driverId: "drvT2", driverName: "Other Truck" });
+  });
+  const ON = where("status", "in", ["filed", "approved"]);
+  // the assigned driver sees (and can open the scan of) their truck's papers
+  await allow("driver lists their assigned truck's papers", () => getDocs(q(as("drvT1"), "documents", eq("carrierId", "A"), eq("truckId", "tA1"), ON)));
+  await allow("driver opens their truck's registration", () => getDoc(doc(as("drvT1"), "documents/TF1")));
+  await allow("driver opens the scan of their truck's registration", () => getDoc(doc(as("drvT1"), "docFiles/TF1")));
+  await deny("driver lists another truck's papers", () => getDocs(q(as("drvT1"), "documents", eq("carrierId", "A"), eq("truckId", "tA2"), ON)));
+  await deny("driver opens another truck's insurance", () => getDoc(doc(as("drvT1"), "documents/TF2")));
+  await deny("driver opens the scan of another truck's insurance", () => getDoc(doc(as("drvT1"), "docFiles/TF2")));
+  await deny("driver opens a rejected paper on their truck", () => getDoc(doc(as("drvT1"), "documents/TF3")));
+  await deny("driver lists truck papers without saying 'on file'", () => getDocs(q(as("drvT1"), "documents", eq("carrierId", "A"), eq("truckId", "tA1"))));
+  await deny("driver with no truck lists truck papers", () => getDocs(q(as("drvNoTruck"), "documents", eq("carrierId", "A"), eq("truckId", "tA1"), ON)));
+  await deny("driver from carrier B with a matching truck id opens A's paper", () => getDoc(doc(as("drvBT"), "documents/TF1")));
+  await deny("driver from carrier B opens A's scan", () => getDoc(doc(as("drvBT"), "docFiles/TF1")));
+  // a driver's own papers
+  await allow("driver lists their own papers on file", () => getDocs(q(as("drvT1"), "documents", eq("carrierId", "A"), eq("driverId", "drvT1"), ON)));
+  await allow("driver opens their own CDL scan", () => getDoc(doc(as("drvT1"), "docFiles/DF1")));
+  await deny("driver opens another driver's med card", () => getDoc(doc(as("drvT1"), "documents/DF2")));
+  await deny("driver lists another driver's papers", () => getDocs(q(as("drvT1"), "documents", eq("carrierId", "A"), eq("driverId", "drvT2"), ON)));
+  // who adds them
+  const addFile = (db, by, extra) => { const b = writeBatch(db); const r = doc(collection(db, "documents")); b.set(r, { carrierId: "A", uploadedBy: by, name: "x", kind: "Registration / cab card", category: "Truck files", ...extra }); b.set(doc(db, "docFiles", r.id), { carrierId: "A", uploadedBy: by, data: "x" }); return b.commit(); };
+  await allow("carrier admin adds a truck paper", () => addFile(as("adminA"), "adminA", { status: "filed", truckId: "tA1", truckUnit: "Unit 1" }));
+  await allow("carrier admin adds a driver paper", () => addFile(as("adminA"), "adminA", { status: "filed", category: "Driver files", kind: "CDL", driverId: "drvA1" }));
+  await allow("owner adds a truck paper", () => addFile(as("owner"), "owner", { status: "approved", truckId: "tA2" }));
+  await allow("assigned dispatcher adds a truck paper", () => addFile(as("dispA"), "dispA", { status: "approved", truckId: "tA2" }));
+  await deny("carrier admin files a paper under carrier B's truck", () => addFile(as("adminA"), "adminA", { status: "filed", truckId: "tB1" }));
+  await deny("carrier admin files a paper under carrier B's driver", () => addFile(as("adminA"), "adminA", { status: "filed", driverId: "drvB1" }));
+  await deny("carrier admin files a paper under a truck that doesn't exist", () => addFile(as("adminA"), "adminA", { status: "filed", truckId: "NOPE" }));
+  await deny("driver adds a paper to a truck", () => addFile(as("drvT1"), "drvT1", { status: "pending", truckId: "tA1" }));
+  await deny("driver adds a paper to themselves", () => addFile(as("drvT1"), "drvT1", { status: "pending", driverId: "drvT1" }));
+  await deny("carrier B admin adds to carrier A's truck", () => addFile(as("adminB"), "adminB", { status: "filed", truckId: "tA1" }));
+  await deny("driver edits their truck's paper", () => updateDoc(doc(as("drvT1"), "documents/TF1"), { expiresAt: "2099-01-01" }));
+  await deny("driver deletes their truck's paper", () => deleteDoc(doc(as("drvT1"), "documents/TF1")));
+  await allow("carrier admin updates a truck paper's expiry", () => updateDoc(doc(as("adminA"), "documents/TF1"), { expiresAt: "2027-01-31" }));
+  await deny("carrier admin moves a truck paper to another truck", () => updateDoc(doc(as("adminA"), "documents/TF1"), { truckId: "tA2" }));
+  await deny("dispatcher moves a truck paper to carrier B's truck", () => updateDoc(doc(as("dispA"), "documents/TF2"), { truckId: "tB1" }));
+  await allow("dispatcher moves a truck paper to another of the same carrier's trucks", () => updateDoc(doc(as("dispA"), "documents/TF2"), { truckId: "tA1", truckUnit: "Unit 1" }));
+  await allow("carrier admin lists all truck files", () => getDocs(q(as("adminA"), "documents", eq("carrierId", "A"), eq("category", "Truck files"))));
+  await deny("carrier B admin lists carrier A truck files", () => getDocs(q(as("adminB"), "documents", eq("carrierId", "A"), eq("category", "Truck files"))));
+  // existing driver uploads still work
+  await allow("driver still uploads a BOL to their load", () => upload2(as("drvT1"), "drvT1", { loadId: "L2" }));
+}
+async function upload2(db, by, extra) { const b = writeBatch(db); const r = doc(collection(db, "documents")); b.set(r, { carrierId: "A", uploadedBy: by, status: "pending", name: "x", ...extra }); b.set(doc(db, "docFiles", r.id), { carrierId: "A", uploadedBy: by, data: "x" }); return b.commit(); }
+
 // ---------- Report ----------
 const failed = results.filter((r) => !r.ok);
 for (const r of results) console.log(`${r.ok ? "PASS" : "FAIL"}  ${r.name}${r.ok ? "" : "  -> " + r.err}`);
