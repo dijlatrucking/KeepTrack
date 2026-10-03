@@ -201,18 +201,21 @@ export function expiryTag(d) {
   if (!exp) return null;
   const late = exp.getTime() < Date.now(), soon = exp.getTime() < Date.now() + SOON_MS;
   if (!late && !soon) return null;
-  return h("span", { class: "pill pill-" + (late ? "bad" : "warn") }, late ? "Expired" : "Expires " + fmtDate(exp));
+  return h("span", { class: "pill pill-" + (late ? "bad" : "warn") + " tag" }, late ? "Expired" : "Expires soon");
 }
+// Expiry dates carry the year: papers often run a year or more out.
+const fullDate = (d) => d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 export const isExpiring = (d) => { const exp = toDate(d.expiresAt); return !!exp && exp.getTime() < Date.now() + SOON_MS; };
 
 // One paper with Open / Download / Print (and Edit / Delete for people who manage the company).
 export function fileRow(ctx, d, { manage = false } = {}) {
   const exp = toDate(d.expiresAt);
+  // the name is "<type> · <truck or driver>", already clear from where the list is; show it only if it was changed
+  const ownName = d.name && !String(d.name).startsWith(d.kind || "\u0000") ? d.name : null;
   return h("div", { class: "row" },
     h("div", { class: "grow" },
-      h("div", { class: "strong" }, d.kind || d.name || "Document"),
-      h("div", { class: "muted small" }, [exp ? "Expires " + fmtDate(exp) : null, d.note, d.name && d.name !== d.kind ? d.name : null].filter(Boolean).join(" · "))),
-    expiryTag(d),
+      h("div", { class: "strong" }, d.kind || d.name || "Document", expiryTag(d)),
+      h("div", { class: "muted small" }, [exp && !isNaN(exp) ? "Expires " + fullDate(exp) : "No expiry date", d.note, ownName].filter(Boolean).join(" · "))),
     h("div", { class: "row-meta" },
       btn("Open", () => openDoc(d), "secondary", { class: "btn btn-sm" }),
       btn("Download", () => downloadDoc(d), "ghost", { class: "btn btn-ghost btn-sm" }),
